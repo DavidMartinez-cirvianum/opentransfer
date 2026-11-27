@@ -258,20 +258,31 @@ install_local_postgres() {
   [[ "$port" =~ ^[0-9]{1,5}$ ]] || die "No se pudo detectar un puerto válido del clúster PostgreSQL (obtenido: '$port'; fila: '$cluster')."
   PG_PORT="$port"
 
-  local role_exists db_exists
+  local role_exists db_exists db_owner
   role_exists="$(runuser -u postgres -- psql -X -A -t -p "$PG_PORT" -d postgres -v ON_ERROR_STOP=1 -c "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '$POSTGRES_USER')")"
   db_exists="$(runuser -u postgres -- psql -X -A -t -p "$PG_PORT" -d postgres -v ON_ERROR_STOP=1 -c "SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = '$POSTGRES_DB')")"
-  [[ "$role_exists" == "f" && "$db_exists" == "f" ]] || die "Ya existe el usuario o la base de datos $POSTGRES_USER/$POSTGRES_DB. No se modificará nada. Usa --postgres external con su URL o elige otros nombres mediante --postgres-user y --postgres-db."
 
   DB_PASSWORD="$(openssl rand -hex 32)"
-  log "Creando el usuario y la base de datos OpenTransfer..."
-  # Feed SQL through stdin: the generated password is not exposed in process arguments or a file.
-  runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -p "$PG_PORT" -d postgres <<SQL
+  if [[ "$role_exists" == "t" && "$db_exists" == "t" ]]; then
+    # Recover an interrupted previous installation only when the existing
+    # database is already owned by the dedicated OpenTransfer role.
+    db_owner="$(runuser -u postgres -- psql -X -A -t -p "$PG_PORT" -d postgres -v ON_ERROR_STOP=1 -c "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = '$POSTGRES_DB'")"
+    [[ "$db_owner" == "$POSTGRES_USER" ]] || die "Ya existen $POSTGRES_USER/$POSTGRES_DB, pero la base no pertenece al usuario de OpenTransfer (propietario: '$db_owner'). No se modificará nada."
+    log "Recuperando la base de datos de una instalación anterior incompleta..."
+    runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -p "$PG_PORT" -d postgres \\
+      -c "ALTER ROLE \"$POSTGRES_USER\" WITH LOGIN PASSWORD '$DB_PASSWORD'"
+  elif [[ "$role_exists" == "f" && "$db_exists" == "f" ]]; then
+    log "Creando el usuario y la base de datos OpenTransfer..."
+    # Feed SQL through stdin: the generated password is not exposed in process arguments or a file.
+    runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -p "$PG_PORT" -d postgres <<SQL
 SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', '$POSTGRES_USER', '$DB_PASSWORD')
-\gexec
+\\gexec
 SELECT format('CREATE DATABASE %I OWNER %I', '$POSTGRES_DB', '$POSTGRES_USER')
-\gexec
+\\gexec
 SQL
+  else
+    die "Solo existe uno de los recursos PostgreSQL ($POSTGRES_USER/$POSTGRES_DB). No se modificará nada automáticamente."
+  fi
   DATABASE_URL="postgres://$POSTGRES_USER:$DB_PASSWORD@127.0.0.1:$PG_PORT/$POSTGRES_DB?sslmode=disable"
   PGPASSWORD="$DB_PASSWORD" psql -X -h 127.0.0.1 -p "$PG_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -A -t -v ON_ERROR_STOP=1 -c "SELECT 1" | grep -qx "1" || die "PostgreSQL se ha configurado, pero no se ha podido validar la conexión TCP."
   POSTGRES_MANAGED=1
