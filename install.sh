@@ -253,8 +253,9 @@ install_local_postgres() {
     cluster="$(pg_lsclusters --no-header | awk '$4 == "online" {print $1, $2, $3; exit}')"
   fi
   [[ -n "$cluster" ]] || die "No hay ningún clúster PostgreSQL en línea."
-  read -r version name port <<< "$cluster"
-  [[ "$port" =~ ^[0-9]{1,5}$ ]] || die "No se pudo detectar un puerto válido del clúster PostgreSQL (obtenido: '$port')."
+  # The script uses a strict global IFS (newline/tab); parse pg_lsclusters columns with spaces explicitly.
+  IFS=' ' read -r version name port _ <<< "$cluster"
+  [[ "$port" =~ ^[0-9]{1,5}$ ]] || die "No se pudo detectar un puerto válido del clúster PostgreSQL (obtenido: '$port'; fila: '$cluster')."
   PG_PORT="$port"
 
   local role_exists db_exists
