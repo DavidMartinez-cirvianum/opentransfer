@@ -35,9 +35,9 @@ jobs:
             --backup-dir /tmp/opentransfer-ci-first/backups \
             --bind 127.0.0.1 --port 24567 --yes --no-start
 
-          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -c \
-            "CREATE ROLE opentransfer_ci LOGIN PASSWORD 'ci-secret';"
-          sudo -u postgres createdb --owner=opentransfer_ci opentransfer_ci
+          sudo -u postgres createdb --owner=postgres opentransfer_ci
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d opentransfer_ci -c \
+            "CREATE TABLE installer_recovery_probe (value text NOT NULL); INSERT INTO installer_recovery_probe VALUES ('preserved-data');"
 
           mkdir -p /tmp/opentransfer-ci-second/config /tmp/opentransfer-ci-second/data/files
           ci_key="$(openssl rand -base64 32 | tr -d '\n')"
@@ -71,3 +71,9 @@ jobs:
           sudo grep -qx 'POSTGRES_PASSWORD=ci-secret' /tmp/opentransfer-ci-second/config/instance.env
           sudo grep -Fqx 'OT_DATABASE_URL=postgres://opentransfer_ci:ci-secret@127.0.0.1:5432/opentransfer_ci?sslmode=disable' /tmp/opentransfer-ci-second/config/instance.env
           sudo find /tmp/opentransfer-ci-second/config -maxdepth 1 -name 'instance.env.backup.*' -print -quit | grep -q .
+          db_owner="$(sudo -u postgres psql -X -A -t -c "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = 'opentransfer_ci'")"
+          [[ "$db_owner" == "opentransfer_ci" ]]
+          schema_owner="$(sudo -u postgres psql -X -A -t -d opentransfer_ci -c "SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname = 'public'")"
+          [[ "$schema_owner" == "opentransfer_ci" ]]
+          probe="$(PGPASSWORD=ci-secret psql -X -h 127.0.0.1 -p 5432 -U opentransfer_ci -d opentransfer_ci -A -t -v ON_ERROR_STOP=1 -c "SELECT value FROM installer_recovery_probe")"
+          [[ "$probe" == "preserved-data" ]]
