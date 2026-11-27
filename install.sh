@@ -23,6 +23,7 @@ POSTGRES_USER="opentransfer"
 POSTGRES_MANAGED=0
 DB_PASSWORD=""
 PG_PORT=""
+PG_SQL_FILE=""
 ASSUME_YES=0
 NO_START=0
 SOURCE_DIR=""
@@ -31,7 +32,7 @@ TMP_DIR=""
 log() { printf '[OpenTransfer] %s\n' "$*"; }
 warn() { printf '[OpenTransfer] AVISO: %s\n' "$*" >&2; }
 die() { printf '[OpenTransfer] ERROR: %s\n' "$*" >&2; exit 1; }
-cleanup() { [[ -z "$TMP_DIR" ]] || rm -rf -- "$TMP_DIR"; }
+cleanup() { [[ -z "$PG_SQL_FILE" ]] || rm -f -- "$PG_SQL_FILE"; [[ -z "$TMP_DIR" ]] || rm -rf -- "$TMP_DIR"; }
 trap cleanup EXIT
 trap 'die "Fallo en la línea $LINENO. No se han eliminado tus datos."' ERR
 
@@ -62,8 +63,9 @@ Opciones:
   --no-start                 Instalar sin iniciar los servicios
   --help                     Mostrar esta ayuda
 
-No instala ni modifica automáticamente Docker, PostgreSQL, firewall, SSH, DNS
-ni el proxy inverso. Consulta docs/INSTALLATION.md antes de desplegar.
+No instala Docker ni modifica firewall, SSH, DNS o proxy inverso. En modo native
+puede instalar PostgreSQL localmente en Debian/Ubuntu o usar una base existente.
+Consulta docs/INSTALLATION.md antes de desplegar.
 EOF
 }
 
@@ -262,13 +264,19 @@ install_local_postgres() {
 
   DB_PASSWORD="$(openssl rand -hex 32)"
   log "Creando el usuario y la base de datos OpenTransfer..."
-  runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -p "$PG_PORT" -d postgres \
-    -v db_user="$POSTGRES_USER" -v db_name="$POSTGRES_DB" -v db_password="$DB_PASSWORD" <<'SQL'
-SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', :'db_user', :'db_password')
-\gexec
-SELECT format('CREATE DATABASE %I OWNER %I', :'db_name', :'db_user')
-\gexec
+  # Keep the generated credential out of the psql process arguments.
+  umask 077
+  PG_SQL_FILE="$(mktemp)"
+  chmod 600 "$PG_SQL_FILE"
+  cat > "$PG_SQL_FILE" <<SQL
+SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', '$POSTGRES_USER', '$DB_PASSWORD')
+\\gexec
+SELECT format('CREATE DATABASE %I OWNER %I', '$POSTGRES_DB', '$POSTGRES_USER')
+\\gexec
 SQL
+  runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -p "$PG_PORT" -d postgres -f "$PG_SQL_FILE"
+  rm -f -- "$PG_SQL_FILE"
+  PG_SQL_FILE=""
   DATABASE_URL="postgres://$POSTGRES_USER:$DB_PASSWORD@127.0.0.1:$PG_PORT/$POSTGRES_DB?sslmode=disable"
   PGPASSWORD="$DB_PASSWORD" psql "host=127.0.0.1 port=$PG_PORT dbname=$POSTGRES_DB user=$POSTGRES_USER" -X -A -t -v ON_ERROR_STOP=1 -c "SELECT 1" | grep -qx "1" || die "PostgreSQL se ha configurado, pero no se ha podido validar la conexión TCP."
   POSTGRES_MANAGED=1
