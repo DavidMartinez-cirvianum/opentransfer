@@ -24,7 +24,7 @@ El instalador:
 - separa releases, configuración, PostgreSQL y archivos;
 - no cambia firewall, SSH, DNS ni proxy existente.
 
-Para NAS, primero monta SMB/NFS en el host y después ejecuta `sudo ./install.sh --storage nas --storage-path /mnt/opentransfer`.
+Para instalar en modo nativo con PostgreSQL automático: `sudo ./install.sh --mode native --postgres install --bind 192.168.56.101 --port 5173 --yes`. En modo interactivo también puedes elegir un PostgreSQL existente; el instalador pide su URL ocultando la contraseña. Para NAS, primero monta SMB/NFS en el host y después ejecuta `sudo ./install.sh --storage nas --storage-path /mnt/opentransfer`.
 
 Consulta [la guía de instalación](docs/INSTALLATION.md) y [todas las variables](docs/CONFIGURATION.md).
 
