@@ -17,6 +17,12 @@ PUBLIC_URL=""
 STORAGE_BACKEND="local"
 STORAGE_PATH=""
 DATABASE_URL=""
+POSTGRES_MODE="auto"
+POSTGRES_DB="opentransfer"
+POSTGRES_USER="opentransfer"
+POSTGRES_MANAGED=0
+DB_PASSWORD=""
+PG_PORT=""
 ASSUME_YES=0
 NO_START=0
 SOURCE_DIR=""
@@ -49,6 +55,9 @@ Opciones:
   --storage local|nas        Disco local o NAS ya montado por el sistema
   --storage-path RUTA        Ruta absoluta donde persistir los archivos
   --database-url URL         URL PostgreSQL para modo native
+  --postgres auto|install|external  Instalar PostgreSQL local o usar uno existente
+  --postgres-db NOMBRE       Nombre de la base de datos local (por defecto: opentransfer)
+  --postgres-user NOMBRE     Usuario PostgreSQL local (por defecto: opentransfer)
   --yes                      Usar valores predeterminados sin preguntar
   --no-start                 Instalar sin iniciar los servicios
   --help                     Mostrar esta ayuda
@@ -72,6 +81,9 @@ while (($#)); do
     --storage) STORAGE_BACKEND="${2:?Falta el valor de --storage}"; shift 2 ;;
     --storage-path) STORAGE_PATH="${2:?Falta el valor de --storage-path}"; shift 2 ;;
     --database-url) DATABASE_URL="${2:?Falta el valor de --database-url}"; shift 2 ;;
+    --postgres) POSTGRES_MODE="${2:?Falta el valor de --postgres}"; shift 2 ;;
+    --postgres-db) POSTGRES_DB="${2:?Falta el valor de --postgres-db}"; shift 2 ;;
+    --postgres-user) POSTGRES_USER="${2:?Falta el valor de --postgres-user}"; shift 2 ;;
     --yes) ASSUME_YES=1; shift ;;
     --no-start) NO_START=1; shift ;;
     --help|-h) usage; exit 0 ;;
@@ -84,6 +96,9 @@ done
 [[ "$(uname -s)" == "Linux" ]] || die "Solo se admiten sistemas Linux."
 case "$(uname -m)" in x86_64|aarch64|arm64) ;; *) die "Arquitectura no soportada: $(uname -m)" ;; esac
 [[ "$MODE" == "docker" || "$MODE" == "native" ]] || die "--mode debe ser docker o native."
+[[ "$POSTGRES_MODE" == "auto" || "$POSTGRES_MODE" == "install" || "$POSTGRES_MODE" == "external" ]] || die "--postgres debe ser auto, install o external."
+[[ "$POSTGRES_DB" =~ ^[A-Za-z_][A-Za-z0-9_]{0,62}$ ]] || die "--postgres-db debe ser un identificador SQL simple de hasta 63 caracteres."
+[[ "$POSTGRES_USER" =~ ^[A-Za-z_][A-Za-z0-9_]{0,62}$ ]] || die "--postgres-user debe ser un identificador SQL simple de hasta 63 caracteres."
 [[ "$STORAGE_BACKEND" == "local" || "$STORAGE_BACKEND" == "nas" ]] || die "--storage debe ser local o nas."
 [[ "$HTTP_PORT" =~ ^[0-9]{1,5}$ ]] && ((HTTP_PORT > 0 && HTTP_PORT < 65536)) || die "Puerto inválido."
 [[ "$REF" =~ ^[A-Za-z0-9._/-]+$ ]] || die "Referencia Git inválida."
@@ -121,6 +136,14 @@ if ((ASSUME_YES == 0)); then
   [[ -z "$answer" ]] || STORAGE_BACKEND="$answer"
   if [[ "$STORAGE_BACKEND" == "nas" && "$STORAGE_PATH" == "$DATA_DIR/files" ]]; then
     read -r -p "Ruta del NAS ya montado: " STORAGE_PATH
+  fi
+  if [[ "$MODE" == "native" && "$POSTGRES_MODE" == "auto" && -z "$DATABASE_URL" ]]; then
+    read -r -p "PostgreSQL: [1] instalar automáticamente aquí (recomendado) [2] usar uno existente (1): " answer
+    case "${answer,,}" in
+      2|e|externo|existente) POSTGRES_MODE="external" ;;
+      ""|1|i|instalar|local) POSTGRES_MODE="install" ;;
+      *) die "Selecciona 1 (instalar) o 2 (usar uno existente)." ;;
+    esac
   fi
 fi
 [[ "$MODE" == "docker" || "$MODE" == "native" ]] || die "Modo no válido."
@@ -179,17 +202,103 @@ if [[ "$STORAGE_BACKEND" == "nas" ]]; then
   command -v mountpoint >/dev/null && mountpoint -q "$STORAGE_PATH" || warn "No se ha podido confirmar que $STORAGE_PATH sea un punto de montaje."
 fi
 
-# Fail before creating a release directory if native mode has no PostgreSQL URL.
-if [[ "$MODE" == "native" && -z "$DATABASE_URL" ]]; then
-  if ((ASSUME_YES == 1)); then
-    die "Modo native requiere --database-url. Consulta docs/INSTALLATION.md para crear la base de datos PostgreSQL."
+# Configure PostgreSQL before staging application files. Native mode supports
+# an automatically managed local PostgreSQL or an existing external instance.
+install_local_postgres() {
+  [[ -r /etc/os-release ]] || die "No se puede identificar la distribución para instalar PostgreSQL."
+  # shellcheck disable=SC1091
+  . /etc/os-release
+  case "${ID:-}" in
+    debian|ubuntu) ;;
+    *)
+      case " ${ID_LIKE:-} " in
+        *" debian "*|*" ubuntu "*) ;;
+        *) die "La instalación automática de PostgreSQL solo está preparada para Debian/Ubuntu. Usa --postgres external en otra distribución." ;;
+      esac
+      ;;
+  esac
+  command -v apt-get >/dev/null || die "No se encuentra apt-get. Usa --postgres external o instala PostgreSQL manualmente."
+  command -v dpkg-query >/dev/null || die "No se encuentra dpkg-query."
+  if ! dpkg-query -W -f='${Status}' postgresql 2>/dev/null | grep -q "install ok installed"; then
+    log "Instalando PostgreSQL mediante APT..."
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql postgresql-client
+  else
+    log "PostgreSQL ya está instalado; se reutilizará el servicio local."
   fi
-  printf '\nOpenTransfer no instala PostgreSQL en modo native. Debes indicar una base de datos ya creada.\n'
-  read -r -s -p "URL PostgreSQL (por ejemplo postgres://usuario:clave@127.0.0.1:5432/opentransfer?sslmode=disable): " DATABASE_URL
-  printf '\n'
-fi
+  command -v pg_lsclusters >/dev/null || die "Falta pg_lsclusters (paquete postgresql-common)."
+  command -v runuser >/dev/null || die "Falta runuser para administrar PostgreSQL de forma segura."
+  systemctl enable --now postgresql
+  local cluster version name port
+  cluster="$(pg_lsclusters --no-header | awk '$4 == "online" {print $1, $2, $3; exit}')"
+  if [[ -z "$cluster" ]]; then
+    cluster="$(pg_lsclusters --no-header | awk 'NF {print $1, $2, $3; exit}')"
+    if [[ -n "$cluster" ]]; then
+      read -r version name port <<< "$cluster"
+      log "Iniciando el clúster PostgreSQL $version/$name..."
+      pg_ctlcluster "$version" "$name" start
+    else
+      version="$(psql --version | awk '{print $3}' | cut -d. -f1)"
+      [[ "$version" =~ ^[0-9]+$ ]] || die "No se pudo detectar la versión de PostgreSQL para crear el clúster."
+      log "Creando el clúster PostgreSQL $version/main..."
+      pg_createcluster "$version" main --start
+    fi
+    cluster="$(pg_lsclusters --no-header | awk '$4 == "online" {print $1, $2, $3; exit}')"
+  fi
+  [[ -n "$cluster" ]] || die "No hay ningún clúster PostgreSQL en línea."
+  read -r version name port <<< "$cluster"
+  PG_PORT="$port"
+
+  local role_exists db_exists
+  role_exists="$(runuser -u postgres -- psql -X -A -t -p "$PG_PORT" -d postgres -v ON_ERROR_STOP=1 -v db_user="$POSTGRES_USER" -c "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'db_user')")"
+  db_exists="$(runuser -u postgres -- psql -X -A -t -p "$PG_PORT" -d postgres -v ON_ERROR_STOP=1 -v db_name="$POSTGRES_DB" -c "SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'db_name')")"
+  [[ "$role_exists" == "f" && "$db_exists" == "f" ]] || die "Ya existe el usuario o la base de datos $POSTGRES_USER/$POSTGRES_DB. No se modificará nada. Usa --postgres external con su URL o elige otros nombres mediante --postgres-user y --postgres-db."
+
+  DB_PASSWORD="$(openssl rand -hex 32)"
+  log "Creando el usuario y la base de datos OpenTransfer..."
+  runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -p "$PG_PORT" -d postgres \
+    -v db_user="$POSTGRES_USER" -v db_name="$POSTGRES_DB" -v db_password="$DB_PASSWORD" <<'SQL'
+SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', :'db_user', :'db_password')
+\gexec
+SELECT format('CREATE DATABASE %I OWNER %I', :'db_name', :'db_user')
+\gexec
+SQL
+  DATABASE_URL="postgres://$POSTGRES_USER:$DB_PASSWORD@127.0.0.1:$PG_PORT/$POSTGRES_DB?sslmode=disable"
+  PGPASSWORD="$DB_PASSWORD" psql "host=127.0.0.1 port=$PG_PORT dbname=$POSTGRES_DB user=$POSTGRES_USER" -X -A -t -v ON_ERROR_STOP=1 -c "SELECT 1" | grep -qx "1" || die "PostgreSQL se ha configurado, pero no se ha podido validar la conexión TCP."
+  POSTGRES_MANAGED=1
+}
+
 if [[ "$MODE" == "native" ]]; then
-  [[ "$DATABASE_URL" =~ ^postgres(ql)?://[^[:space:]]+$ ]] || die "URL PostgreSQL vacía o inválida. Usa postgres:// o postgresql:// con host y base de datos."
+  if [[ -n "$DATABASE_URL" && "$POSTGRES_MODE" == "install" ]]; then
+    die "No combines --postgres install con --database-url. Usa --postgres external para una base de datos existente."
+  fi
+  if [[ -n "$DATABASE_URL" && "$POSTGRES_MODE" == "auto" ]]; then
+    POSTGRES_MODE="external"
+  fi
+  if [[ "$POSTGRES_MODE" == "auto" ]]; then
+    if ((ASSUME_YES == 1)); then
+      POSTGRES_MODE="install"
+    else
+      read -r -p "¿Cómo quieres configurar PostgreSQL? [1] Instalar localmente (recomendado) [2] Usar uno existente (1): " answer
+      case "${answer,,}" in
+        2|e|externo|existente) POSTGRES_MODE="external" ;;
+        ""|1|i|instalar|local) POSTGRES_MODE="install" ;;
+        *) die "Selecciona 1 (instalar) o 2 (usar uno existente)." ;;
+      esac
+    fi
+  fi
+  if [[ "$POSTGRES_MODE" == "install" ]]; then
+    install_local_postgres
+  else
+    if [[ -z "$DATABASE_URL" ]]; then
+      ((ASSUME_YES == 0)) || die "Has elegido --postgres external: proporciona --database-url."
+      printf '\nUsaremos un PostgreSQL existente. La URL se solicitará sin mostrar la contraseña.\n'
+      read -r -s -p "URL PostgreSQL (postgres://usuario:clave@servidor:5432/base): " DATABASE_URL
+      printf '\n'
+    fi
+    [[ "$DATABASE_URL" =~ ^postgres(ql)?://[^[:space:]]+$ ]] || die "URL PostgreSQL vacía o inválida. Usa postgres:// o postgresql:// con host y base de datos."
+    POSTGRES_MANAGED=0
+  fi
 fi
 
 LISTEN_HOST="$BIND_ADDRESS"
@@ -243,10 +352,11 @@ mv "$STAGE_DIR" "$RELEASE_DIR"
 
 if [[ ! -f "$CONFIG_FILE" ]]; then
   log "Generando configuración privada en $CONFIG_FILE..."
-  DB_PASSWORD="$(openssl rand -hex 32)"
+  if [[ "$MODE" == "docker" ]]; then
+    DB_PASSWORD="$(openssl rand -hex 32)"
+    POSTGRES_MANAGED=0
+  fi
   ENCRYPTION_KEY="$(openssl rand -base64 32)"
-  POSTGRES_DB="opentransfer"
-  POSTGRES_USER="opentransfer"
   if [[ "$MODE" == "docker" ]]; then
     DATABASE_URL="postgres://$POSTGRES_USER:$DB_PASSWORD@database:5432/$POSTGRES_DB?sslmode=disable"
   else
@@ -267,6 +377,7 @@ OT_ENCRYPTION_KEY=$ENCRYPTION_KEY
 OT_BIND_ADDRESS=$BIND_ADDRESS
 OT_HTTP_PORT=$HTTP_PORT
 OT_POSTGRES_DATA_DIR=$DATA_DIR/postgres
+OT_POSTGRES_MANAGED=$POSTGRES_MANAGED
 POSTGRES_DB=$POSTGRES_DB
 POSTGRES_USER=$POSTGRES_USER
 POSTGRES_PASSWORD=$DB_PASSWORD
@@ -314,6 +425,10 @@ else
   sed -e "s|/opt/opentransfer|$APP_ROOT|g" -e "s|/etc/opentransfer/instance.env|$CONFIG_FILE|g" -e "s|/var/lib/opentransfer|$DATA_DIR|g" \
     -e "s|ReadWritePaths=$DATA_DIR|ReadWritePaths=$DATA_DIR $STORAGE_PATH|" \
     "$RELEASE_DIR/deploy/opentransfer.service" > "$SERVICE_TMP"
+  if [[ "$POSTGRES_MANAGED" == "1" ]]; then
+    sed -i 's/^After=network-online.target$/After=network-online.target postgresql.service/' "$SERVICE_TMP"
+    sed -i '/^After=network-online.target/a Wants=postgresql.service' "$SERVICE_TMP"
+  fi
   install -m 644 "$SERVICE_TMP" /etc/systemd/system/opentransfer.service
   ln -s "$RELEASE_DIR" "$APP_ROOT/current.new"
   mv -Tf "$APP_ROOT/current.new" "$APP_ROOT/current"
