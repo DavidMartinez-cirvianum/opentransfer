@@ -15,7 +15,8 @@ La configuración de la instancia se guarda en `/etc/opentransfer/instance.env` 
 | `OT_ENCRYPTION_KEY` | Clave aleatoria de 32 bytes codificada en base64 | Generada por instalación |
 | `OT_BIND_ADDRESS` | Interfaz host publicada por Docker | `127.0.0.1` |
 | `OT_HTTP_PORT` | Puerto host publicado por Docker | `8080` |
-| `OT_POSTGRES_DATA_DIR` | Directorio host de PostgreSQL | `/var/lib/opentransfer/postgres` |
+| `OT_POSTGRES_DATA_DIR` | Directorio host de PostgreSQL en Docker | `/var/lib/opentransfer/postgres` |
+| `OT_POSTGRES_MANAGED` | `1` si el instalador nativo administra el PostgreSQL local | `0` para bases existentes |
 | `POSTGRES_DB` | Base de datos inicial de Docker | `opentransfer` |
 | `POSTGRES_USER` | Usuario inicial de Docker | `opentransfer` |
 | `POSTGRES_PASSWORD` | Secreto inicial de PostgreSQL Docker | Aleatorio |
@@ -24,6 +25,8 @@ La configuración de la instancia se guarda en `/etc/opentransfer/instance.env` 
 
 - Conserva `OT_ENCRYPTION_KEY` en un gestor de secretos y en una copia de recuperación cifrada separada. Perderla puede impedir recuperar archivos cifrados en futuras versiones.
 - No cambies `POSTGRES_PASSWORD` a mano sin actualizar también la contraseña del rol PostgreSQL.
+- En modo nativo, el instalador guarda la conexión y los secretos generados en este archivo; no lo compartas ni lo subas a Git.
+- Cuando `OT_POSTGRES_MANAGED=1`, el servicio systemd espera a que arranque `postgresql.service`.
 - Mantén `OT_BIND_ADDRESS=127.0.0.1` cuando el proxy inverso esté en el mismo servidor.
 - Si el proxy está en otra máquina, define una interfaz privada, restringe el tráfico en la red corporativa y configura explícitamente la política de firewall. El instalador no abre puertos.
 - Usa TLS entre proxy y servicio cuando atraviese una red no confiable.
