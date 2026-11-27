@@ -303,11 +303,15 @@ SQL
 }
 
 if [[ "$MODE" == "native" ]]; then
-  if [[ -n "$DATABASE_URL" && "$POSTGRES_MODE" == "install" ]]; then
-    die "No combines --postgres install con --database-url. Usa --postgres external para una base de datos existente."
+  if [[ -n "$DATABASE_URL" && "$POSTGRES_MODE" == "install" && "$POSTGRES_MANAGED" != "1" ]]; then
+    die "No combines --postgres install con una --database-url externa. Usa --postgres external para una base de datos existente."
   fi
   if [[ -n "$DATABASE_URL" && "$POSTGRES_MODE" == "auto" ]]; then
-    POSTGRES_MODE="external"
+    if [[ "$POSTGRES_MANAGED" == "1" ]]; then
+      POSTGRES_MODE="install"
+    else
+      POSTGRES_MODE="external"
+    fi
   fi
   if [[ "$POSTGRES_MODE" == "auto" ]]; then
     if ((ASSUME_YES == 1)); then
