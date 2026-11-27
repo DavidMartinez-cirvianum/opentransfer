@@ -48,7 +48,15 @@ read_config() {
 }
 HTTP_PORT="$(read_config OT_HTTP_PORT)"
 HTTP_PORT="${HTTP_PORT:-8080}"
+BIND_ADDRESS="$(read_config OT_BIND_ADDRESS)"
+BIND_ADDRESS="${BIND_ADDRESS:-127.0.0.1}"
 [[ "$HTTP_PORT" =~ ^[0-9]{1,5}$ ]] || die "OT_HTTP_PORT no es válido en la configuración."
+case "$BIND_ADDRESS" in 0.0.0.0|::) HEALTH_HOST="127.0.0.1" ;; *) HEALTH_HOST="$BIND_ADDRESS" ;; esac
+if [[ "$HEALTH_HOST" == *:* ]]; then
+  HEALTH_URL="http://[$HEALTH_HOST]:$HTTP_PORT"
+else
+  HEALTH_URL="http://$HEALTH_HOST:$HTTP_PORT"
+fi
 
 TMP_DIR="$(mktemp -d)"
 GIT_DIR="$TMP_DIR/repository"
@@ -134,7 +142,7 @@ fi
 
 READY=0
 for _ in {1..40}; do
-  if curl --fail --silent "http://127.0.0.1:$HTTP_PORT/readyz" >/dev/null; then READY=1; break; fi
+  if curl --fail --silent "$HEALTH_URL/readyz" >/dev/null; then READY=1; break; fi
   sleep 2
 done
 if ((READY == 0)); then
