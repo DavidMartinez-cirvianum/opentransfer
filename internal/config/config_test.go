@@ -36,6 +36,15 @@ func TestLoadFromRejectsMissingDatabase(t *testing.T) {
 	}
 }
 
+func TestLoadFromRejectsMissingEncryptionKey(t *testing.T) {
+	values := validEnv()
+	values["OT_ENCRYPTION_KEY"] = ""
+	_, err := LoadFrom(func(key string) string { return values[key] })
+	if err == nil || !strings.Contains(err.Error(), "OT_ENCRYPTION_KEY") {
+		t.Fatalf("expected required encryption key error, got %v", err)
+	}
+}
+
 func TestLoadFromRejectsInvalidEncryptionKey(t *testing.T) {
 	values := validEnv()
 	values["OT_ENCRYPTION_KEY"] = "bm90LTMyeA=="
