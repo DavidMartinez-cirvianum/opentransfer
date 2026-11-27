@@ -1,0 +1,86 @@
+# Instalación de OpenTransfer
+
+Estado: primera base de instalación y diagnóstico. No es todavía una suite de transferencia lista para producción.
+
+## Requisitos
+
+- Linux x86_64 o ARM64.
+- 2 GiB libres como mínimo en el volumen de instalación y 2 GiB de RAM recomendados.
+- Docker Engine + Docker Compose v2 para el modo recomendado.
+- Para modo nativo: systemd, Go 1.23 o posterior y un PostgreSQL externo ya instalado.
+- HTTPS terminado en un proxy inverso administrado por la empresa cuando el servicio se exponga fuera de localhost.
+
+El instalador no instala Docker/PostgreSQL por su cuenta y no modifica firewall, SSH, DNS, Nginx, Caddy ni certificados. La empresa decide cuándo y cómo hacerlo.
+
+## Instalación Docker Compose
+
+Desde una copia clonada del repositorio:
+
+```bash
+sudo ./install.sh
+```
+
+Instalación no interactiva con valores explícitos:
+
+```bash
+sudo ./install.sh --mode docker --bind 127.0.0.1 --port 8080 \
+  --storage local --storage-path /var/lib/opentransfer/files --yes
+```
+
+El modo Docker usa PostgreSQL privado en una red interna de Compose. La base de datos no publica ningún puerto en el host. La aplicación se publica por defecto en `127.0.0.1:8080`, lista para un proxy inverso local.
+
+## Instalación Linux nativa
+
+La modalidad nativa instala un binario Go y un servicio systemd. Requiere PostgreSQL previamente creado y accesible:
+
+```bash
+sudo ./install.sh --mode native \
+  --database-url 'postgres://usuario:contraseña@127.0.0.1:5432/opentransfer?sslmode=disable'
+```
+
+La URL contiene credenciales; evita escribirla en scripts compartidos, historial de shell o tickets. También puedes omitir `--database-url` y escribirla cuando el instalador la solicite de forma oculta.
+
+## Directorios persistentes
+
+| Ruta predeterminada | Contenido | Se reemplaza al actualizar |
+|---|---|---|
+| `/opt/opentransfer/releases/` | Cada versión del código | No; se añade un release |
+| `/opt/opentransfer/current` | Enlace al release activo | Sí, de forma atómica |
+| `/etc/opentransfer/instance.env` | Configuración y secretos | Nunca automáticamente |
+| `/var/lib/opentransfer/postgres/` | Datos PostgreSQL (Docker) | Nunca |
+| `/var/lib/opentransfer/files/` | Archivos (almacenamiento local por defecto) | Nunca |
+| `/var/backups/opentransfer/` | Copias previas a actualizaciones | Nunca automáticamente |
+
+No muevas ni borres estas rutas sin un procedimiento de migración y una copia verificada.
+
+## Almacenamiento NAS
+
+OpenTransfer no monta SMB/NFS por sí mismo. Primero monta el recurso en Linux mediante fstab/systemd y valida su persistencia tras reiniciar. Después:
+
+```bash
+sudo ./install.sh --storage nas --storage-path /mnt/opentransfer
+```
+
+La ruta debe existir y ser escribible por la identidad que ejecuta la aplicación. En Docker, el contenedor usa UID/GID 10001; ajusta ACL/permisos del NAS para esa identidad. El instalador no hace `chown -R` sobre un NAS existente.
+
+## Primer arranque y diagnóstico
+
+```bash
+# Docker
+docker compose -p opentransfer -f /opt/opentransfer/current/deploy/compose.yaml ps
+docker compose -p opentransfer -f /opt/opentransfer/current/deploy/compose.yaml logs --tail=100
+
+# Nativo
+sudo systemctl status opentransfer
+sudo journalctl -u opentransfer -n 100 --no-pager
+
+# Diagnóstico HTTP
+curl -fsS http://127.0.0.1:8080/healthz
+curl -fsS http://127.0.0.1:8080/readyz
+```
+
+`/healthz` confirma que el proceso HTTP responde. `/readyz` comprueba permisos de escritura del directorio y conectividad TCP con el host PostgreSQL; todavía no valida autenticación, esquema ni migraciones SQL.
+
+## Desinstalación
+
+No existe un desinstalador destructivo en esta fase. Para retirar el servicio sin perder datos, detén el servicio/los contenedores y conserva por separado configuración, base de datos, archivos y claves. No ejecutes `docker compose down -v`.

@@ -1,0 +1,11 @@
+.git
+.github
+.gitignore
+.env
+.env.*
+!.env.example
+backups
+data
+dist
+coverage.out
+*.log

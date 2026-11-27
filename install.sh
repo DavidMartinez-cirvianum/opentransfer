@@ -1,0 +1,288 @@
+#!/usr/bin/env bash
+# OpenTransfer installer. It never removes existing application data or config.
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+REPO_URL="https://github.com/DavidMartinez-cirvianum/opentransfer.git"
+REPO_API="https://api.github.com/repos/DavidMartinez-cirvianum/opentransfer"
+REF="main"
+MODE="docker"
+APP_ROOT="/opt/opentransfer"
+CONFIG_DIR="/etc/opentransfer"
+DATA_DIR="/var/lib/opentransfer"
+BACKUP_DIR="/var/backups/opentransfer"
+BIND_ADDRESS="127.0.0.1"
+HTTP_PORT="8080"
+PUBLIC_URL=""
+STORAGE_BACKEND="local"
+STORAGE_PATH=""
+DATABASE_URL=""
+ASSUME_YES=0
+NO_START=0
+SOURCE_DIR=""
+TMP_DIR=""
+
+log() { printf '[OpenTransfer] %s\n' "$*"; }
+warn() { printf '[OpenTransfer] AVISO: %s\n' "$*" >&2; }
+die() { printf '[OpenTransfer] ERROR: %s\n' "$*" >&2; exit 1; }
+cleanup() { [[ -z "$TMP_DIR" ]] || rm -rf -- "$TMP_DIR"; }
+trap cleanup EXIT
+trap 'die "Fallo en la línea $LINENO. No se han eliminado tus datos."' ERR
+
+usage() {
+  cat <<'EOF'
+OpenTransfer installer
+
+Uso:
+  sudo ./install.sh [opciones]
+
+Opciones:
+  --mode docker|native       Docker Compose (por defecto) o Linux + systemd
+  --ref REF                  Rama o etiqueta de origen (por defecto: main)
+  --app-dir RUTA             Raíz de instalación (por defecto: /opt/opentransfer)
+  --config-dir RUTA          Configuración privada (por defecto: /etc/opentransfer)
+  --data-dir RUTA            Datos persistentes (por defecto: /var/lib/opentransfer)
+  --backup-dir RUTA          Copias locales (por defecto: /var/backups/opentransfer)
+  --bind DIRECCION           Dirección host de publicación (por defecto: 127.0.0.1)
+  --port PUERTO              Puerto HTTP (por defecto: 8080)
+  --url URL                  URL pública / URL del proxy inverso
+  --storage local|nas        Disco local o NAS ya montado por el sistema
+  --storage-path RUTA        Ruta absoluta donde persistir los archivos
+  --database-url URL         URL PostgreSQL para modo native
+  --yes                      Usar valores predeterminados sin preguntar
+  --no-start                 Instalar sin iniciar los servicios
+  --help                     Mostrar esta ayuda
+
+No instala ni modifica automáticamente Docker, PostgreSQL, firewall, SSH, DNS
+ni el proxy inverso. Consulta docs/INSTALLATION.md antes de desplegar.
+EOF
+}
+
+while (($#)); do
+  case "$1" in
+    --mode) MODE="${2:?Falta el valor de --mode}"; shift 2 ;;
+    --ref) REF="${2:?Falta el valor de --ref}"; shift 2 ;;
+    --app-dir) APP_ROOT="${2:?Falta el valor de --app-dir}"; shift 2 ;;
+    --config-dir) CONFIG_DIR="${2:?Falta el valor de --config-dir}"; shift 2 ;;
+    --data-dir) DATA_DIR="${2:?Falta el valor de --data-dir}"; shift 2 ;;
+    --backup-dir) BACKUP_DIR="${2:?Falta el valor de --backup-dir}"; shift 2 ;;
+    --bind) BIND_ADDRESS="${2:?Falta el valor de --bind}"; shift 2 ;;
+    --port) HTTP_PORT="${2:?Falta el valor de --port}"; shift 2 ;;
+    --url) PUBLIC_URL="${2:?Falta el valor de --url}"; shift 2 ;;
+    --storage) STORAGE_BACKEND="${2:?Falta el valor de --storage}"; shift 2 ;;
+    --storage-path) STORAGE_PATH="${2:?Falta el valor de --storage-path}"; shift 2 ;;
+    --database-url) DATABASE_URL="${2:?Falta el valor de --database-url}"; shift 2 ;;
+    --yes) ASSUME_YES=1; shift ;;
+    --no-start) NO_START=1; shift ;;
+    --help|-h) usage; exit 0 ;;
+    *) die "Opción desconocida: $1" ;;
+  esac
+done
+
+[[ $EUID -eq 0 ]] || die "Ejecuta el instalador como root: sudo ./install.sh"
+[[ "$(uname -s)" == "Linux" ]] || die "Solo se admiten sistemas Linux."
+case "$(uname -m)" in x86_64|aarch64|arm64) ;; *) die "Arquitectura no soportada: $(uname -m)" ;; esac
+[[ "$MODE" == "docker" || "$MODE" == "native" ]] || die "--mode debe ser docker o native."
+[[ "$STORAGE_BACKEND" == "local" || "$STORAGE_BACKEND" == "nas" ]] || die "--storage debe ser local o nas."
+[[ "$HTTP_PORT" =~ ^[0-9]{1,5}$ ]] && ((HTTP_PORT > 0 && HTTP_PORT < 65536)) || die "Puerto inválido."
+[[ "$REF" =~ ^[A-Za-z0-9._/-]+$ ]] || die "Referencia Git inválida."
+for p in "$APP_ROOT" "$CONFIG_DIR" "$DATA_DIR" "$BACKUP_DIR"; do
+  [[ "$p" == /* && "$p" != *" "* && "$p" != *"|"* ]] || die "Las rutas deben ser absolutas y no contener espacios ni '|': $p"
+done
+
+command -v curl >/dev/null || die "Falta curl."
+command -v tar >/dev/null || die "Falta tar."
+command -v openssl >/dev/null || die "Falta openssl."
+command -v df >/dev/null || die "Falta df."
+command -v ss >/dev/null || die "Falta ss."
+
+if [[ -z "$STORAGE_PATH" ]]; then STORAGE_PATH="$DATA_DIR/files"; fi
+[[ "$STORAGE_PATH" == /* && "$STORAGE_PATH" != *" "* && "$STORAGE_PATH" != *":"* && "$STORAGE_PATH" != *"|"* ]] || die "La ruta de almacenamiento debe ser absoluta y no contener espacios, ':' ni '|'."
+[[ "$STORAGE_PATH" != "$APP_ROOT"* && "$STORAGE_PATH" != "$CONFIG_DIR"* ]] || die "El almacenamiento no puede estar dentro del directorio de código ni de configuración."
+
+mkdir -p "$(dirname "$APP_ROOT")" "$(dirname "$CONFIG_DIR")" "$(dirname "$DATA_DIR")"
+AVAILABLE_KB="$(df -Pk "$(dirname "$APP_ROOT")" | awk 'NR==2 {print $4}')"
+[[ "$AVAILABLE_KB" =~ ^[0-9]+$ ]] && ((AVAILABLE_KB >= 2097152)) || die "Se necesitan al menos 2 GiB libres en el volumen de instalación."
+MEM_KB="$(awk '/MemTotal/ {print $2}' /proc/meminfo)"
+if [[ "$MEM_KB" =~ ^[0-9]+$ ]] && ((MEM_KB < 2097152)); then warn "Hay menos de 2 GiB de RAM; el rendimiento puede ser insuficiente."; fi
+if ss -ltn | awk -v p=":$HTTP_PORT" '$4 ~ p"$" {found=1} END {exit !found}'; then
+  die "El puerto $HTTP_PORT ya está ocupado. Elige otro puerto o configura tu proxy."
+fi
+
+if ((ASSUME_YES == 0)); then
+  read -r -p "Modo [docker/native] (docker): " answer
+  [[ -z "$answer" ]] || MODE="$answer"
+  [[ "$MODE" == "docker" || "$MODE" == "native" ]] || die "Modo no válido."
+  read -r -p "Dirección de publicación [$BIND_ADDRESS]: " answer
+  [[ -z "$answer" ]] || BIND_ADDRESS="$answer"
+  read -r -p "Puerto HTTP [$HTTP_PORT]: " answer
+  [[ -z "$answer" ]] || HTTP_PORT="$answer"
+  if [[ -z "$PUBLIC_URL" ]]; then
+    read -r -p "URL pública (vacío si aún no tienes dominio): " PUBLIC_URL
+  fi
+  read -r -p "Almacenamiento [local/nas] ($STORAGE_BACKEND): " answer
+  [[ -z "$answer" ]] || STORAGE_BACKEND="$answer"
+  if [[ "$STORAGE_BACKEND" == "nas" && "$STORAGE_PATH" == "$DATA_DIR/files" ]]; then
+    read -r -p "Ruta del NAS ya montado: " STORAGE_PATH
+  fi
+fi
+[[ "$MODE" == "docker" || "$MODE" == "native" ]] || die "Modo no válido."
+if [[ "$MODE" == "docker" ]]; then
+  command -v docker >/dev/null || die "Docker no está instalado. Consulta https://docs.docker.com/engine/install/."
+  docker compose version >/dev/null 2>&1 || die "Se necesita Docker Compose v2 (docker compose)."
+else
+  command -v go >/dev/null || die "El modo native requiere Go instalado (versión 1.23 o posterior)."
+  command -v systemctl >/dev/null || die "El modo native requiere systemd."
+  command -v useradd >/dev/null || die "No se encuentra useradd."
+  [[ -n "$DATABASE_URL" ]] || warn "El modo native necesita un PostgreSQL ya instalado y una URL de conexión."
+fi
+[[ "$STORAGE_BACKEND" == "local" || "$STORAGE_BACKEND" == "nas" ]] || die "Backend de almacenamiento no válido."
+[[ "$HTTP_PORT" =~ ^[0-9]{1,5}$ ]] && ((HTTP_PORT > 0 && HTTP_PORT < 65536)) || die "Puerto inválido."
+[[ "$BIND_ADDRESS" =~ ^[0-9a-fA-F:.]+$ ]] || die "Dirección de bind inválida."
+[[ "$STORAGE_PATH" == /* && "$STORAGE_PATH" != *" "* && "$STORAGE_PATH" != *":"* && "$STORAGE_PATH" != *"|"* ]] || die "La ruta de almacenamiento debe ser absoluta y no contener espacios, ':' ni '|'."
+[[ "$PUBLIC_URL" == "" || "$PUBLIC_URL" =~ ^https?://[^[:space:]]+$ ]] || die "URL pública inválida (usa http:// o https://)."
+if ss -ltn | awk -v p=":$HTTP_PORT" '$4 ~ p"$" {found=1} END {exit !found}'; then
+  die "El puerto $HTTP_PORT ya está ocupado. Elige otro puerto o configura tu proxy."
+fi
+if [[ -z "$PUBLIC_URL" ]]; then
+  HOST_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  PUBLIC_URL="http://${HOST_IP:-127.0.0.1}:$HTTP_PORT"
+fi
+if [[ "$STORAGE_BACKEND" == "nas" ]]; then
+  [[ -d "$STORAGE_PATH" ]] || die "La ruta NAS debe existir y estar montada antes de instalar."
+  command -v mountpoint >/dev/null && mountpoint -q "$STORAGE_PATH" || warn "No se ha podido confirmar que $STORAGE_PATH sea un punto de montaje."
+fi
+
+CONFIG_FILE="$CONFIG_DIR/instance.env"
+mkdir -p "$APP_ROOT/releases" "$CONFIG_DIR" "$DATA_DIR" "$BACKUP_DIR" "$STORAGE_PATH"
+chmod 750 "$APP_ROOT" "$APP_ROOT/releases" "$DATA_DIR" "$BACKUP_DIR" 2>/dev/null || true
+chmod 750 "$CONFIG_DIR"
+
+TMP_DIR="$(mktemp -d)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
+if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/go.mod" && -f "$SCRIPT_DIR/Dockerfile" ]]; then
+  SOURCE_DIR="$SCRIPT_DIR"
+else
+  log "Descargando el código de OpenTransfer ($REF)..."
+  mkdir -p "$TMP_DIR/source"
+  curl --fail --silent --show-error --location --retry 3 "$REPO_API/tarball/$REF" -o "$TMP_DIR/source.tar.gz"
+  tar -xzf "$TMP_DIR/source.tar.gz" --strip-components=1 -C "$TMP_DIR/source"
+  SOURCE_DIR="$TMP_DIR/source"
+fi
+[[ -f "$SOURCE_DIR/VERSION" && -f "$SOURCE_DIR/go.mod" ]] || die "El código descargado no contiene VERSION/go.mod."
+VERSION="$(tr -d '[:space:]' < "$SOURCE_DIR/VERSION")"
+[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]] || die "VERSION no sigue el formato esperado: $VERSION"
+SHORT_SHA="local"
+if command -v git >/dev/null && git -C "$SOURCE_DIR" rev-parse --short=8 HEAD >/dev/null 2>&1; then
+  SHORT_SHA="$(git -C "$SOURCE_DIR" rev-parse --short=8 HEAD)"
+fi
+RELEASE_NAME="${VERSION}-${SHORT_SHA}"
+RELEASE_DIR="$APP_ROOT/releases/$RELEASE_NAME"
+[[ ! -e "$RELEASE_DIR" ]] || die "La versión ya está instalada: $RELEASE_DIR"
+STAGE_DIR="$APP_ROOT/releases/.stage-$RELEASE_NAME-$$"
+mkdir -m 750 "$STAGE_DIR"
+tar --exclude=.git --exclude=backups --exclude=data -cf - -C "$SOURCE_DIR" . | tar -xf - -C "$STAGE_DIR"
+mv "$STAGE_DIR" "$RELEASE_DIR"
+
+if [[ ! -f "$CONFIG_FILE" ]]; then
+  log "Generando configuración privada en $CONFIG_FILE..."
+  DB_PASSWORD="$(openssl rand -hex 32)"
+  ENCRYPTION_KEY="$(openssl rand -base64 32)"
+  POSTGRES_DB="opentransfer"
+  POSTGRES_USER="opentransfer"
+  if [[ "$MODE" == "docker" ]]; then
+    DATABASE_URL="postgres://$POSTGRES_USER:$DB_PASSWORD@database:5432/$POSTGRES_DB?sslmode=disable"
+  else
+    if [[ -z "$DATABASE_URL" && $ASSUME_YES -eq 0 ]]; then
+      read -r -s -p "URL PostgreSQL (entrada oculta): " DATABASE_URL; printf '\n'
+    fi
+    [[ -n "$DATABASE_URL" ]] || die "Para native especifica --database-url o introdúcela en el asistente."
+  fi
+  umask 077
+  CONFIG_TMP="$CONFIG_FILE.tmp.$$"
+  cat > "$CONFIG_TMP" <<EOF
+# OpenTransfer private configuration. Keep this file secret (chmod 600).
+OT_CONFIG_FILE=$CONFIG_FILE
+OT_LISTEN_ADDR=127.0.0.1:$HTTP_PORT
+OT_PUBLIC_URL=$PUBLIC_URL
+OT_LOG_LEVEL=info
+OT_DATABASE_URL=$DATABASE_URL
+OT_STORAGE_BACKEND=$STORAGE_BACKEND
+OT_STORAGE_LOCAL_PATH=$STORAGE_PATH
+OT_ENCRYPTION_KEY=$ENCRYPTION_KEY
+OT_BIND_ADDRESS=$BIND_ADDRESS
+OT_HTTP_PORT=$HTTP_PORT
+OT_POSTGRES_DATA_DIR=$DATA_DIR/postgres
+POSTGRES_DB=$POSTGRES_DB
+POSTGRES_USER=$POSTGRES_USER
+POSTGRES_PASSWORD=$DB_PASSWORD
+EOF
+  chmod 600 "$CONFIG_TMP"
+  mv "$CONFIG_TMP" "$CONFIG_FILE"
+else
+  warn "Ya existe $CONFIG_FILE. Se conserva sin sobrescribirlo."
+  chmod 600 "$CONFIG_FILE"
+fi
+
+if [[ "$MODE" == "docker" ]]; then
+  if [[ "$STORAGE_BACKEND" == "local" && "$STORAGE_PATH" == "$DATA_DIR/files" ]]; then
+    chown 10001:10001 "$STORAGE_PATH"
+  fi
+  docker compose --project-name opentransfer --env-file "$CONFIG_FILE" \
+    -f "$RELEASE_DIR/deploy/compose.yaml" --project-directory "$RELEASE_DIR" config --quiet
+  if ((NO_START == 0)); then
+    docker compose --project-name opentransfer --env-file "$CONFIG_FILE" \
+      -f "$RELEASE_DIR/deploy/compose.yaml" --project-directory "$RELEASE_DIR" up -d --build
+    ln -s "$RELEASE_DIR" "$APP_ROOT/current.new"
+    mv -Tf "$APP_ROOT/current.new" "$APP_ROOT/current"
+    log "Esperando a que la API responda..."
+    READY=0
+    for _ in {1..40}; do
+      if curl --fail --silent "http://127.0.0.1:$HTTP_PORT/readyz" >/dev/null; then READY=1; break; fi
+      sleep 2
+    done
+    ((READY == 1)) || die "Los contenedores están instalados, pero /readyz no responde. Consulta docker compose logs."
+  fi
+else
+  if ! id opentransfer >/dev/null 2>&1; then
+    useradd --system --home-dir "$DATA_DIR" --shell /usr/sbin/nologin opentransfer
+  fi
+  install -d -o opentransfer -g opentransfer -m 750 "$DATA_DIR"
+  if [[ "$STORAGE_BACKEND" == "local" && "$STORAGE_PATH" == "$DATA_DIR/files" ]]; then
+    chown opentransfer:opentransfer "$STORAGE_PATH"
+  fi
+  runuser -u opentransfer -- test -w "$STORAGE_PATH" || die "El usuario opentransfer no puede escribir en $STORAGE_PATH. Ajusta permisos/ACL del almacenamiento."
+  command -v go >/dev/null || die "No se encuentra Go."
+  (cd "$RELEASE_DIR" && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=$VERSION" -o "$RELEASE_DIR/bin/opentransfer" ./cmd/opentransfer)
+  chown -R root:root "$RELEASE_DIR"
+  chmod 755 "$RELEASE_DIR/bin/opentransfer"
+  SERVICE_TMP="$TMP_DIR/opentransfer.service"
+  sed -e "s|/opt/opentransfer|$APP_ROOT|g" -e "s|/etc/opentransfer/instance.env|$CONFIG_FILE|g" -e "s|/var/lib/opentransfer|$DATA_DIR|g" \
+    -e "s|ReadWritePaths=$DATA_DIR|ReadWritePaths=$DATA_DIR $STORAGE_PATH|" \
+    "$RELEASE_DIR/deploy/opentransfer.service" > "$SERVICE_TMP"
+  install -m 644 "$SERVICE_TMP" /etc/systemd/system/opentransfer.service
+  ln -s "$RELEASE_DIR" "$APP_ROOT/current.new"
+  mv -Tf "$APP_ROOT/current.new" "$APP_ROOT/current"
+  if ((NO_START == 0)); then
+    systemctl daemon-reload
+    systemctl enable --now opentransfer
+    systemctl is-active --quiet opentransfer || die "El servicio systemd no ha arrancado. Consulta journalctl -u opentransfer."
+  fi
+fi
+
+log "Instalación preparada."
+log "Código: $RELEASE_DIR"
+log "Configuración privada: $CONFIG_FILE"
+log "Datos persistentes: $DATA_DIR"
+log "Almacenamiento: $STORAGE_PATH"
+log "URL prevista: $PUBLIC_URL"
+if ((NO_START == 1)); then
+  log "No se ha iniciado ningún servicio (--no-start)."
+else
+  if [[ "$MODE" == "docker" ]]; then
+    log "Estado: docker compose -p opentransfer -f $APP_ROOT/current/deploy/compose.yaml ps"
+  else
+    log "Estado: systemctl status opentransfer"
+  fi
+fi
+log "No se ha modificado firewall, SSH, DNS ni proxy inverso."

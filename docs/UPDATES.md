@@ -1,59 +1,48 @@
-# Política de actualizaciones de OpenTransfer
+# Política de actualizaciones
 
-## Convención de versión y nombre
+## Principio
 
-Las versiones publicables usarán MAJOR.MINOR.PATCH. Cada versión que requiera actualizar una instalación entregará en la raíz un script con este formato:
+Las actualizaciones añaden un release de código nuevo y cambian el enlace `current`. No reinstalan la instancia y no borran ni regeneran:
 
-- actualizacionv0.2.0.sh
-- actualizacionv0.3.0.sh
-- actualizacionv1.0.0.sh
+- `/etc/opentransfer/instance.env` (configuración, claves y credenciales);
+- el directorio PostgreSQL;
+- los archivos almacenados;
+- certificados y configuración del proxy inverso;
+- releases anteriores.
 
-El nombre exacto corresponderá a la versión de destino. El script debe indicar qué versión mínima admite y qué cambios aplica. Los cambios solo documentales o de prototipo que no alteren una instalación ejecutable no necesitan un script de servidor.
+No se ejecuta `docker compose down -v`, `rm -rf /var/lib/opentransfer` ni un reset del repositorio de instalación.
 
-## Datos que una actualización debe conservar
+## Comando
 
-- Base de datos PostgreSQL y sus volúmenes.
-- Archivos y objetos transferidos.
-- Usuarios, invitados, carpetas, permisos, transferencias y auditoría.
-- Configuración local, variables y secretos.
-- Claves de cifrado y material de recuperación.
-- Certificados TLS y configuración del proxy que no administre OpenTransfer.
-- Logs y copias existentes.
+Cuando exista una etiqueta estable publicada en GitHub:
 
-Los datos persistentes estarán separados de los binarios, imágenes y archivos de cada release.
+```bash
+sudo ./actualizador.sh v0.2.0
+```
 
-## Comportamiento obligatorio del script
+El actualizador exige una etiqueta semántica exacta, comprueba que el fichero VERSION de esa etiqueta coincide y registra el commit descargado. No actualiza desde `main` ni desde una rama móvil.
 
-1. Comprobar sistema, permisos, versión instalada, espacio disponible y estado del servicio.
-2. Adquirir un bloqueo para impedir dos actualizaciones simultáneas.
-3. Mostrar los cambios y detenerse ante una versión no compatible.
-4. Crear y verificar una copia previa de base de datos, archivos y configuración; el material de claves se protegerá por separado y nunca se imprimirá.
-5. Descargar o instalar únicamente artefactos de la versión objetivo, verificando checksum y firma cuando estén disponibles.
-6. Aplicar solo las migraciones necesarias, en orden y con registro de versión.
-7. Mantener compatibilidad hacia atrás durante la migración: expandir, migrar datos y retirar estructuras antiguas solo en una versión posterior.
-8. Reiniciar únicamente los servicios necesarios y comprobar health/readiness.
-9. Guardar un informe con resultado, versión anterior/nueva, migraciones y ubicación de la copia.
-10. Si falla, conservar la copia y el diagnóstico; no borrar datos ni intentar una restauración destructiva automática.
+## Qué hace
 
-## Prohibiciones
+1. Comprueba permisos, configuración, release actual y herramientas.
+2. Descarga la etiqueta a un repositorio temporal y comprueba su versión.
+3. Crea un directorio nuevo `releases/VERSION-COMMIT`; nunca sobreescribe el release anterior.
+4. Respalda el archivo de configuración. En Docker, intenta crear también un dump lógico de PostgreSQL.
+5. Valida Compose/compila el binario antes de activar la nueva versión.
+6. Cambia `current` atómicamente.
+7. Reinicia únicamente el servicio de aplicación y espera `/readyz`.
+8. Si falla el health check, vuelve al release anterior. Los directorios y datos permanecen intactos.
 
-- Nunca ejecutar docker compose down -v.
-- Nunca borrar o recrear volúmenes de PostgreSQL o almacenamiento.
-- Nunca sobrescribir un fichero de configuración existente por defecto.
-- Nunca regenerar claves de cifrado durante una actualización.
-- Nunca borrar carpetas de archivos, logs o backups.
-- Nunca actualizar a latest sin fijar una versión.
-- Nunca modificar firewall, SSH, DNS o configuración de un proxy ajeno sin permiso explícito.
-- Nunca ejecutar una migración destructiva irreversible como parte de una actualización rutinaria.
+Los releases antiguos no se limpian automáticamente. La limpieza será una operación de mantenimiento explícita cuando exista una política segura de retención.
 
-## Diseño de recuperación
+## Scripts por versión
 
-- Mantener releases en directorios separados o usar imágenes Docker versionadas.
-- Cambiar la versión activa de forma atómica cuando sea posible.
-- Mantener migraciones compatibles con la versión anterior para permitir volver atrás con el binario si la migración lo permite.
-- Si una migración de datos no permite rollback seguro, detener la actualización y requerir un procedimiento explícito de restauración desde la copia verificada.
-- Probar cada script desde la versión anterior en un entorno con datos, cuotas, invitados, carpetas y archivos de ejemplo.
+Cada versión publicable que cambie el procedimiento de actualización debe incluir en la raíz un wrapper auditable `actualizacionvX.Y.Z.sh` que invoque o especialice `actualizador.sh`, además de notas de versión y migraciones versionadas. No se debe publicar un wrapper ficticio para una versión sin cambios.
 
-## Estado actual
+## Migraciones futuras
 
-El repositorio todavía contiene un prototipo frontend y documentación; no existe aún un servicio instalable ni una estructura de datos persistente. Por tanto, todavía no es posible crear honestamente un actualizador de servidor funcional. El primer script ejecutable se entregará cuando existan el runtime y el procedimiento real de instalación. Crear ahora un script que solo descargue código o reinicie servicios inexistentes daría una falsa sensación de seguridad.
+Cuando haya esquema SQL, cada migración deberá ser incremental, transaccional cuando sea posible, idempotente y compatible con el código anterior durante el despliegue (expand/migrate/contract). Antes de migrar se exigirá backup PostgreSQL verificable. Los cambios de datos/archivos nunca se automatizarán con `rm` masivo ni rollback destructivo. El rollback de código no deshace migraciones incompatibles: estas necesitarán un plan independiente y probado.
+
+## Limitaciones de esta primera versión
+
+El backend actual todavía no implementa tablas de negocio ni migraciones SQL. Por eso el actualizador no ejecuta migraciones automáticas. El dump SQL de respaldo es de precaución; el directorio de archivos se conserva in situ y no se copia en cada actualización.

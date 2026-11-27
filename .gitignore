@@ -1,24 +1,23 @@
-# Dependencies
-node_modules/
-web/node_modules/
-
-# Build output
-dist/
-web/dist/
-build/
-
-# Environment and secrets
+# Local configuration and secrets
 .env
 .env.*
 !.env.example
+config/instance.env
 *.pem
 *.key
 
-# Logs
-*.log
-npm-debug.log*
+# Go
+/bin/
+/dist/
+/coverage.out
 
-# OS / editor
+# Local state and backups
+/data/
+/backups/
+/tmp/
+*.log
+
+# Editor / OS
 .DS_Store
-.vscode/
 .idea/
+.vscode/
