@@ -23,7 +23,6 @@ POSTGRES_USER="opentransfer"
 POSTGRES_MANAGED=0
 DB_PASSWORD=""
 PG_PORT=""
-PG_SQL_FILE=""
 ASSUME_YES=0
 NO_START=0
 SOURCE_DIR=""
@@ -32,7 +31,7 @@ TMP_DIR=""
 log() { printf '[OpenTransfer] %s\n' "$*"; }
 warn() { printf '[OpenTransfer] AVISO: %s\n' "$*" >&2; }
 die() { printf '[OpenTransfer] ERROR: %s\n' "$*" >&2; exit 1; }
-cleanup() { [[ -z "$PG_SQL_FILE" ]] || rm -f -- "$PG_SQL_FILE"; [[ -z "$TMP_DIR" ]] || rm -rf -- "$TMP_DIR"; }
+cleanup() { [[ -z "$TMP_DIR" ]] || rm -rf -- "$TMP_DIR"; }
 trap cleanup EXIT
 trap 'die "Fallo en la línea $LINENO. No se han eliminado tus datos."' ERR
 
@@ -258,25 +257,19 @@ install_local_postgres() {
   PG_PORT="$port"
 
   local role_exists db_exists
-  role_exists="$(runuser -u postgres -- psql -X -A -t -p "$PG_PORT" -d postgres -v ON_ERROR_STOP=1 -v db_user="$POSTGRES_USER" -c "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'db_user')")"
-  db_exists="$(runuser -u postgres -- psql -X -A -t -p "$PG_PORT" -d postgres -v ON_ERROR_STOP=1 -v db_name="$POSTGRES_DB" -c "SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'db_name')")"
+  role_exists="$(runuser -u postgres -- psql -X -A -t -p "$PG_PORT" -d postgres -v ON_ERROR_STOP=1 -c "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '$POSTGRES_USER')")"
+  db_exists="$(runuser -u postgres -- psql -X -A -t -p "$PG_PORT" -d postgres -v ON_ERROR_STOP=1 -c "SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = '$POSTGRES_DB')")"
   [[ "$role_exists" == "f" && "$db_exists" == "f" ]] || die "Ya existe el usuario o la base de datos $POSTGRES_USER/$POSTGRES_DB. No se modificará nada. Usa --postgres external con su URL o elige otros nombres mediante --postgres-user y --postgres-db."
 
   DB_PASSWORD="$(openssl rand -hex 32)"
   log "Creando el usuario y la base de datos OpenTransfer..."
-  # Keep the generated credential out of the psql process arguments.
-  umask 077
-  PG_SQL_FILE="$(mktemp)"
-  chmod 600 "$PG_SQL_FILE"
-  cat > "$PG_SQL_FILE" <<SQL
+  # Feed SQL through stdin: the generated password is not exposed in process arguments or a file.
+  runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -p "$PG_PORT" -d postgres <<SQL
 SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', '$POSTGRES_USER', '$DB_PASSWORD')
 \gexec
 SELECT format('CREATE DATABASE %I OWNER %I', '$POSTGRES_DB', '$POSTGRES_USER')
 \gexec
 SQL
-  runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -p "$PG_PORT" -d postgres -f "$PG_SQL_FILE"
-  rm -f -- "$PG_SQL_FILE"
-  PG_SQL_FILE=""
   DATABASE_URL="postgres://$POSTGRES_USER:$DB_PASSWORD@127.0.0.1:$PG_PORT/$POSTGRES_DB?sslmode=disable"
   PGPASSWORD="$DB_PASSWORD" psql "host=127.0.0.1 port=$PG_PORT dbname=$POSTGRES_DB user=$POSTGRES_USER" -X -A -t -v ON_ERROR_STOP=1 -c "SELECT 1" | grep -qx "1" || die "PostgreSQL se ha configurado, pero no se ha podido validar la conexión TCP."
   POSTGRES_MANAGED=1
