@@ -46,7 +46,7 @@ jobs:
           OT_LISTEN_ADDR=127.0.0.1:24568
           OT_PUBLIC_URL=http://127.0.0.1:24568
           OT_LOG_LEVEL=info
-          OT_DATABASE_URL=postgres://opentransfer_ci:ci-secret@127.0.0.1:5432/opentransfer_ci?sslmode=disable
+          OT_DATABASE_URL=postgres://opentransfer_ci:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef@127.0.0.1:5432/opentransfer_ci?sslmode=disable
           OT_STORAGE_BACKEND=local
           OT_STORAGE_LOCAL_PATH=/tmp/opentransfer-ci-second/data/files
           OT_ENCRYPTION_KEY=$ci_key
@@ -55,7 +55,7 @@ jobs:
           OT_POSTGRES_MANAGED=0
           POSTGRES_DB=opentransfer_ci
           POSTGRES_USER=opentransfer_ci
-          POSTGRES_PASSWORD=ci-secret
+          POSTGRES_PASSWORD=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
           EOF
           chmod 600 /tmp/opentransfer-ci-second/config/instance.env
 
@@ -68,12 +68,12 @@ jobs:
             --bind 127.0.0.1 --port 24568 --yes --no-start
 
           sudo grep -qx 'OT_POSTGRES_MANAGED=1' /tmp/opentransfer-ci-second/config/instance.env
-          sudo grep -qx 'POSTGRES_PASSWORD=ci-secret' /tmp/opentransfer-ci-second/config/instance.env
-          sudo grep -Fqx 'OT_DATABASE_URL=postgres://opentransfer_ci:ci-secret@127.0.0.1:5432/opentransfer_ci?sslmode=disable' /tmp/opentransfer-ci-second/config/instance.env
+          sudo grep -qx 'POSTGRES_PASSWORD=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' /tmp/opentransfer-ci-second/config/instance.env
+          sudo grep -Fqx 'OT_DATABASE_URL=postgres://opentransfer_ci:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef@127.0.0.1:5432/opentransfer_ci?sslmode=disable' /tmp/opentransfer-ci-second/config/instance.env
           sudo find /tmp/opentransfer-ci-second/config -maxdepth 1 -name 'instance.env.backup.*' -print -quit | grep -q .
           db_owner="$(sudo -u postgres psql -X -A -t -c "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = 'opentransfer_ci'")"
           [[ "$db_owner" == "opentransfer_ci" ]]
           schema_owner="$(sudo -u postgres psql -X -A -t -d opentransfer_ci -c "SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname = 'public'")"
           [[ "$schema_owner" == "opentransfer_ci" ]]
-          probe="$(PGPASSWORD=ci-secret psql -X -h 127.0.0.1 -p 5432 -U opentransfer_ci -d opentransfer_ci -A -t -v ON_ERROR_STOP=1 -c "SELECT value FROM installer_recovery_probe")"
+          probe="$(PGPASSWORD=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef psql -X -h 127.0.0.1 -p 5432 -U opentransfer_ci -d opentransfer_ci -A -t -v ON_ERROR_STOP=1 -c "SELECT value FROM installer_recovery_probe")"
           [[ "$probe" == "preserved-data" ]]
