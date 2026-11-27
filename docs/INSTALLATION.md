@@ -31,14 +31,33 @@ El modo Docker usa PostgreSQL privado en una red interna de Compose. La base de 
 
 ## Instalación Linux nativa
 
-La modalidad nativa instala un binario Go y un servicio systemd. Requiere PostgreSQL previamente creado y accesible:
+La modalidad nativa instala un binario Go y un servicio systemd. Requiere PostgreSQL previamente instalado, con un usuario y una base de datos creados. En Debian/Ubuntu, por ejemplo:
+
+```bash
+sudo apt update
+sudo apt install -y postgresql
+sudo -u postgres psql
+```
+
+Dentro de `psql`, crea un usuario con una contraseña larga y una base de datos propia:
+
+```sql
+CREATE ROLE opentransfer LOGIN PASSWORD 'CAMBIA_POR_UNA_CLAVE_LARGA';
+CREATE DATABASE opentransfer OWNER opentransfer;
+\q
+```
+
+Después instala indicando la conexión. Sustituye la contraseña del ejemplo por la que hayas creado:
 
 ```bash
 sudo ./install.sh --mode native \
-  --database-url 'postgres://usuario:contraseña@127.0.0.1:5432/opentransfer?sslmode=disable'
+  --bind 192.168.56.101 --port 5173 \
+  --database-url 'postgres://opentransfer:TU_CLAVE@127.0.0.1:5432/opentransfer?sslmode=disable'
 ```
 
-La URL contiene credenciales; evita escribirla en scripts compartidos, historial de shell o tickets. También puedes omitir `--database-url` y escribirla cuando el instalador la solicite de forma oculta.
+También puedes ejecutar `sudo ./install.sh` y escribir la URL cuando el instalador la solicite de forma oculta. Si la dejas vacía, el instalador se detiene antes de crear un release. La dirección `--bind` es la interfaz de red en la que escuchará el servicio; debe existir en ese servidor. Usa `127.0.0.1` para acceso solo local, una IP LAN concreta para acceso desde esa red o `0.0.0.0` para todas las interfaces (solo junto a reglas de red/firewall adecuadas).
+
+La URL contiene credenciales; evita escribirla en scripts compartidos, historial de shell o tickets. Para producción, configura TLS y el modo SSL apropiado de PostgreSQL en vez de desactivar SSL cuando la conexión atraviese una red.
 
 ## Directorios persistentes
 
