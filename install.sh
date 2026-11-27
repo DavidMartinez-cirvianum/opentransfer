@@ -241,7 +241,7 @@ install_local_postgres() {
   if [[ -z "$cluster" ]]; then
     cluster="$(pg_lsclusters --no-header | awk 'NF {print $1, $2, $3; exit}')"
     if [[ -n "$cluster" ]]; then
-      read -r version name port <<< "$cluster"
+      IFS=' ' read -r version name port _ <<< "$cluster"
       log "Iniciando el clúster PostgreSQL $version/$name..."
       pg_ctlcluster "$version" "$name" start
     else
@@ -257,6 +257,19 @@ install_local_postgres() {
   IFS=' ' read -r version name port _ <<< "$cluster"
   [[ "$port" =~ ^[0-9]{1,5}$ ]] || die "No se pudo detectar un puerto válido del clúster PostgreSQL (obtenido: '$port'; fila: '$cluster')."
   PG_PORT="$port"
+
+  # If a previous run already wrote a managed database URL to the protected
+  # config, keep its password. Rotating it here would desynchronize PostgreSQL
+  # and instance.env because existing configuration is deliberately preserved.
+  if [[ -f "$CONFIG_FILE" ]]; then
+    if [[ "$POSTGRES_MANAGED" == "1" && -n "$DATABASE_URL" ]]; then
+      log "Se conserva la conexión PostgreSQL de la configuración existente."
+      psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -c "SELECT 1" >/dev/null || die "La conexión PostgreSQL guardada en $CONFIG_FILE no funciona. No se cambiarán usuarios, contraseñas ni datos."
+      POSTGRES_MANAGED=1
+      return 0
+    fi
+    die "Ya existe $CONFIG_FILE y no identifica una base PostgreSQL administrada por OpenTransfer. No se modificará PostgreSQL ni la configuración."
+  fi
 
   local role_exists db_exists db_owner
   role_exists="$(runuser -u postgres -- psql -X -A -t -p "$PG_PORT" -d postgres -v ON_ERROR_STOP=1 -c "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '$POSTGRES_USER')")"
