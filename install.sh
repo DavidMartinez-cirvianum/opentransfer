@@ -80,6 +80,7 @@ while (($#)); do
 done
 
 [[ $EUID -eq 0 ]] || die "Ejecuta el instalador como root: sudo ./install.sh"
+[[ ! -e "$APP_ROOT/current" ]] || die "Ya existe una instalación en $APP_ROOT/current. Para actualizar usa ./actualizador.sh VERSION; install.sh no debe reinstalar una instancia existente."
 [[ "$(uname -s)" == "Linux" ]] || die "Solo se admiten sistemas Linux."
 case "$(uname -m)" in x86_64|aarch64|arm64) ;; *) die "Arquitectura no soportada: $(uname -m)" ;; esac
 [[ "$MODE" == "docker" || "$MODE" == "native" ]] || die "--mode debe ser docker o native."
@@ -105,10 +106,6 @@ AVAILABLE_KB="$(df -Pk "$(dirname "$APP_ROOT")" | awk 'NR==2 {print $4}')"
 [[ "$AVAILABLE_KB" =~ ^[0-9]+$ ]] && ((AVAILABLE_KB >= 2097152)) || die "Se necesitan al menos 2 GiB libres en el volumen de instalación."
 MEM_KB="$(awk '/MemTotal/ {print $2}' /proc/meminfo)"
 if [[ "$MEM_KB" =~ ^[0-9]+$ ]] && ((MEM_KB < 2097152)); then warn "Hay menos de 2 GiB de RAM; el rendimiento puede ser insuficiente."; fi
-if ss -ltn | awk -v p=":$HTTP_PORT" '$4 ~ p"$" {found=1} END {exit !found}'; then
-  die "El puerto $HTTP_PORT ya está ocupado. Elige otro puerto o configura tu proxy."
-fi
-
 if ((ASSUME_YES == 0)); then
   read -r -p "Modo [docker/native] (docker): " answer
   [[ -z "$answer" ]] || MODE="$answer"
@@ -154,6 +151,22 @@ if [[ "$STORAGE_BACKEND" == "nas" ]]; then
 fi
 
 CONFIG_FILE="$CONFIG_DIR/instance.env"
+if [[ -f "$CONFIG_FILE" ]]; then
+  read_existing_config() {
+    sed -n "s/^${1}=//p" "$CONFIG_FILE" | tail -n 1 | sed -e 's/^"//' -e 's/"$//'
+  }
+  warn "Se ha encontrado configuración previa; se usarán sus rutas y valores de publicación sin modificar los secretos."
+  STORAGE_BACKEND="$(read_existing_config OT_STORAGE_BACKEND)"
+  STORAGE_PATH="$(read_existing_config OT_STORAGE_LOCAL_PATH)"
+  HTTP_PORT="$(read_existing_config OT_HTTP_PORT)"
+  BIND_ADDRESS="$(read_existing_config OT_BIND_ADDRESS)"
+  PUBLIC_URL="$(read_existing_config OT_PUBLIC_URL)"
+  DATABASE_URL="$(read_existing_config OT_DATABASE_URL)"
+  [[ -n "$STORAGE_BACKEND" && -n "$STORAGE_PATH" && -n "$HTTP_PORT" ]] || die "La configuración existente está incompleta. Revisa $CONFIG_FILE manualmente."
+fi
+[[ "$STORAGE_BACKEND" == "local" || "$STORAGE_BACKEND" == "nas" ]] || die "Backend de almacenamiento no válido en la configuración."
+[[ "$HTTP_PORT" =~ ^[0-9]{1,5}$ ]] && ((HTTP_PORT > 0 && HTTP_PORT < 65536)) || die "Puerto inválido en la configuración."
+[[ "$STORAGE_PATH" == /* && "$STORAGE_PATH" != *" "* && "$STORAGE_PATH" != *":"* && "$STORAGE_PATH" != *"|"* ]] || die "Ruta de almacenamiento inválida en la configuración."
 mkdir -p "$APP_ROOT/releases" "$CONFIG_DIR" "$DATA_DIR" "$BACKUP_DIR" "$STORAGE_PATH"
 chmod 750 "$APP_ROOT" "$APP_ROOT/releases" "$DATA_DIR" "$BACKUP_DIR" 2>/dev/null || true
 chmod 750 "$CONFIG_DIR"
