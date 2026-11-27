@@ -186,7 +186,7 @@ if [[ "$MODE" == "native" ]]; then
 fi
 
 LISTEN_HOST="$BIND_ADDRESS"
-if [[ "$LISTEN_HOST" == *:* && "$LISTEN_HOST" != \\[*\\] ]]; then
+if [[ "$LISTEN_HOST" == *:* ]]; then
   LISTEN_ADDR="[$LISTEN_HOST]:$HTTP_PORT"
 else
   LISTEN_ADDR="$LISTEN_HOST:$HTTP_PORT"
