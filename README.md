@@ -2,43 +2,36 @@
 
 **Your files. Your server. Your control.**
 
-OpenTransfer is an open-source, self-hosted platform for secure external file transfers, designed for organizations that want to operate their own infrastructure.
+OpenTransfer is an open-source, self-hosted platform for secure external file transfers. It is designed for organizations that want to operate their own infrastructure and control how external recipients access shared files.
 
-## Initial technology direction
+## MVP direction
 
-- Backend: Go
-- Admin web: React, TypeScript, Tailwind CSS
+The first release focuses on one complete workflow: an authenticated employee uploads a file, creates a protected download link, and can later revoke it. An administrator controls users, security policies, storage and audit history.
+
+See [the MVP scope](docs/MVP.md) for the feature boundary and release acceptance criteria.
+
+## Technology
+
+- Backend: Go modular monolith
+- Web interface: React, TypeScript and Tailwind CSS
 - Database: PostgreSQL
-- Storage: selectable local disk, NAS-mounted paths and S3-compatible object storage
-- Deployment: Docker Compose and native Linux installation
-- Service management: systemd on supported Linux distributions
+- Initial storage: local filesystem, with an abstraction for NAS and S3-compatible providers
+- Deployment: Docker Compose first; native Linux/systemd installation after the service lifecycle is stable
 
-## Security architecture
+## Encryption
 
-The product is planned to support two distinct transfer modes:
+The architecture distinguishes two modes:
 
-1. **Server-managed encryption**: the server manages encryption keys and can support server-side inspection workflows.
-2. **End-to-end encryption (E2EE)**: files are encrypted on the sender's device; the server stores ciphertext and cannot inspect file contents.
+- **Server-managed encryption:** the server manages encryption keys and may support server-side inspection workflows.
+- **End-to-end encryption (E2EE):** encryption and decryption happen in clients; the server stores ciphertext and cannot inspect file contents.
 
-These modes have different capabilities and must be clearly disclosed to administrators and users. E2EE cannot provide server-side malware scanning of plaintext.
+The MVP starts with server-managed encryption at rest. E2EE is a later milestone and requires a separately reviewed protocol and threat model. The two modes have different capabilities; E2EE content cannot be scanned by server-side antivirus.
 
 ## Repository status
 
-The first milestone is the administration web interface. Its dashboard currently uses illustrative demo data and is not connected to a backend. Do not use it to manage production systems.
-
-## Planned milestones
-
-1. Administration UI shell and dashboard.
-2. Go API, PostgreSQL schema, configuration and health checks.
-3. Secure first-admin bootstrap, authentication, MFA and RBAC.
-4. Storage providers: local, NAS path and S3-compatible.
-5. Transfer lifecycle, link policies, quotas and audit events.
-6. Docker Compose and native Linux/systemd installation.
-7. Backup/restore, hardening, tests and independent security review.
+The admin frontend is currently a navigation and setup-flow prototype. It is not connected to a backend, does not authenticate users and does not apply real security policies. Do not expose it as a production administration interface.
 
 ## Development
-
-The admin frontend lives in `web/`.
 
 ```bash
 cd web
@@ -46,4 +39,8 @@ npm install
 npm run dev
 ```
 
-This project is under active development. Security features are not production-ready until implemented, tested and reviewed.
+The Go API, PostgreSQL schema, secure administrator bootstrap and upload/download workflow are the next implementation milestones.
+
+## Security notice
+
+OpenTransfer is under active development. It is not production-ready and must not be used for sensitive production transfers until authentication, authorization, cryptography, upload handling, backup/restore and security testing have been implemented and reviewed. No software can be guaranteed unhackable.
