@@ -80,7 +80,7 @@ while (($#)); do
 done
 
 [[ $EUID -eq 0 ]] || die "Ejecuta el instalador como root: sudo ./install.sh"
-[[ ! -e "$APP_ROOT/current" ]] || die "Ya existe una instalación en $APP_ROOT/current. Para actualizar usa ./actualizador.sh VERSION; install.sh no debe reinstalar una instancia existente."
+[[ ! -e "$APP_ROOT/current" && ! -L "$APP_ROOT/current" ]] || die "Ya existe una instalación en $APP_ROOT/current. Para actualizar usa ./actualizador.sh VERSION; install.sh no debe reinstalar una instancia existente."
 [[ "$(uname -s)" == "Linux" ]] || die "Solo se admiten sistemas Linux."
 case "$(uname -m)" in x86_64|aarch64|arm64) ;; *) die "Arquitectura no soportada: $(uname -m)" ;; esac
 [[ "$MODE" == "docker" || "$MODE" == "native" ]] || die "--mode debe ser docker o native."
@@ -167,6 +167,10 @@ fi
 [[ "$STORAGE_BACKEND" == "local" || "$STORAGE_BACKEND" == "nas" ]] || die "Backend de almacenamiento no válido en la configuración."
 [[ "$HTTP_PORT" =~ ^[0-9]{1,5}$ ]] && ((HTTP_PORT > 0 && HTTP_PORT < 65536)) || die "Puerto inválido en la configuración."
 [[ "$STORAGE_PATH" == /* && "$STORAGE_PATH" != *" "* && "$STORAGE_PATH" != *":"* && "$STORAGE_PATH" != *"|"* ]] || die "Ruta de almacenamiento inválida en la configuración."
+if [[ "$STORAGE_BACKEND" == "nas" ]]; then
+  [[ -d "$STORAGE_PATH" ]] || die "La ruta NAS configurada no existe; no se creará para evitar escribir en el disco local si el NAS está desmontado."
+  command -v mountpoint >/dev/null && mountpoint -q "$STORAGE_PATH" || warn "No se ha podido confirmar que $STORAGE_PATH sea un punto de montaje."
+fi
 mkdir -p "$APP_ROOT/releases" "$CONFIG_DIR" "$DATA_DIR" "$BACKUP_DIR" "$STORAGE_PATH"
 chmod 750 "$APP_ROOT" "$APP_ROOT/releases" "$DATA_DIR" "$BACKUP_DIR" 2>/dev/null || true
 chmod 750 "$CONFIG_DIR"
