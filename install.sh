@@ -276,6 +276,21 @@ postgres_host_is_loopback() {
   esac
 }
 
+prepare_app_database_permissions() {
+  # Only called after the installer has verified that the database is owned by
+  # postgres, the local administrator. The database and its contents are kept.
+  runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -p "$PG_PORT" -d postgres <<SQL
+ALTER DATABASE "$POSTGRES_DB" OWNER TO "$POSTGRES_USER";
+GRANT CONNECT, TEMPORARY ON DATABASE "$POSTGRES_DB" TO "$POSTGRES_USER";
+SQL
+  runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -p "$PG_PORT" -d "$POSTGRES_DB" <<SQL
+ALTER SCHEMA public OWNER TO "$POSTGRES_USER";
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO "$POSTGRES_USER";
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO "$POSTGRES_USER";
+GRANT ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public TO "$POSTGRES_USER";
+SQL
+}
+
 persist_native_postgres_config() {
   local new_url="$1" new_password="$2" tmp backup
   [[ -f "$CONFIG_FILE" ]] || return 0
@@ -402,10 +417,10 @@ install_local_postgres() {
   role_exists="$(runuser -u postgres -- psql -X -A -t -p "$PG_PORT" -d postgres -v ON_ERROR_STOP=1 -c "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '$POSTGRES_USER')")"
   db_exists="$(runuser -u postgres -- psql -X -A -t -p "$PG_PORT" -d postgres -v ON_ERROR_STOP=1 -c "SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = '$POSTGRES_DB')")"
 
-  # A previous config can contain a valid local URL but lack the managed flag
-  # (older installer versions did this). Authenticate and verify its identity;
-  # never reject it just because the metadata flag is absent or zero.
-  if [[ -f "$CONFIG_FILE" && -n "$DATABASE_URL" ]]; then
+  # If the saved credentials still work, keep them. A database whose owner was
+  # deliberately changed to postgres can be handed back to the dedicated app
+  # role after verifying the identity of the connection and the DB owner.
+  if [[ -f "$CONFIG_FILE" && -n "$DATABASE_URL" && "$role_exists" == "t" && "$db_exists" == "t" ]]; then
     if db_info="$(psql "$DATABASE_URL" -X -A -t -F '|' -v ON_ERROR_STOP=1 \
       -c "SELECT current_database(), current_user, COALESCE(inet_server_addr()::text, ''), COALESCE(inet_server_port()::text, '')" 2>/dev/null)"; then
       IFS='|' read -r active_db active_user server_addr server_port <<< "$db_info"
@@ -416,32 +431,62 @@ install_local_postgres() {
       esac
       [[ "$server_port" == "$PG_PORT" ]] || die "La URL guardada conecta al puerto $server_port, pero el clúster local seleccionado usa $PG_PORT. No se cambiará de clúster."
       db_owner="$(runuser -u postgres -- psql -X -A -t -p "$PG_PORT" -d postgres -v ON_ERROR_STOP=1 -c "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = '$POSTGRES_DB'")"
-      [[ "$db_owner" == "$POSTGRES_USER" ]] || die "La base $POSTGRES_DB no pertenece al rol dedicado $POSTGRES_USER (propietario: '$db_owner'). No se cambiarán propietarios ni datos."
-      log "Conexión PostgreSQL local anterior validada; se conservan usuario, contraseña y datos."
+      case "$db_owner" in
+        "$POSTGRES_USER")
+          log "Conexión PostgreSQL local anterior validada; se conservan usuario, contraseña y datos."
+          ;;
+        postgres)
+          log "La base pertenece a postgres; se restaura la propiedad del usuario dedicado sin borrar datos..."
+          prepare_app_database_permissions
+          ;;
+        *)
+          die "La base $POSTGRES_DB pertenece a '$db_owner', no a postgres ni al usuario dedicado $POSTGRES_USER. No se cambiarán propietarios ni datos."
+          ;;
+      esac
       POSTGRES_MANAGED=1
       if [[ "$(read_existing_config OT_POSTGRES_MANAGED)" != "1" ]]; then
         persist_native_postgres_config "$DATABASE_URL" ""
       fi
       return 0
     fi
-    warn "La URL PostgreSQL local guardada no autentica; se comprobará el rol y la propiedad antes de reparar la conexión."
+    warn "La URL PostgreSQL local guardada no autentica; se comprobarán el rol y la propiedad antes de reparar las credenciales."
   fi
 
-  DB_PASSWORD="$(openssl rand -hex 32)"
-  if [[ "$role_exists" == "t" && "$db_exists" == "t" ]]; then
+  if [[ "$role_exists" == "f" && "$db_exists" == "t" ]]; then
     db_owner="$(runuser -u postgres -- psql -X -A -t -p "$PG_PORT" -d postgres -v ON_ERROR_STOP=1 -c "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = '$POSTGRES_DB'")"
-    [[ "$db_owner" == "$POSTGRES_USER" ]] || die "Ya existe la base $POSTGRES_DB, pero no pertenece al usuario dedicado $POSTGRES_USER (propietario: '$db_owner'). No se cambiarán propietarios ni datos."
-    log "Recuperando el rol y la base de datos de una instalación local anterior..."
+    [[ "$db_owner" == "postgres" ]] || die "La base $POSTGRES_DB existe pero falta el usuario $POSTGRES_USER y su propietario es '$db_owner'. Solo se recuperará automáticamente cuando sea propiedad del administrador local postgres; no se tocarán los datos."
+    if [[ ! "$DB_PASSWORD" =~ ^[A-Fa-f0-9]{64}$ ]]; then
+      DB_PASSWORD="$(openssl rand -hex 32)"
+    fi
+    log "El usuario $POSTGRES_USER falta, pero la base existe y pertenece a postgres. Se recreará el usuario usando la contraseña guardada y se recuperarán los permisos sin borrar la base..."
     runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -p "$PG_PORT" -d postgres <<SQL
-ALTER ROLE $POSTGRES_USER WITH LOGIN PASSWORD '$DB_PASSWORD';
+SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', '$POSTGRES_USER', '$DB_PASSWORD')
+\gexec
 SQL
+    prepare_app_database_permissions
+  elif [[ "$role_exists" == "t" && "$db_exists" == "t" ]]; then
+    db_owner="$(runuser -u postgres -- psql -X -A -t -p "$PG_PORT" -d postgres -v ON_ERROR_STOP=1 -c "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = '$POSTGRES_DB'")"
+    [[ "$db_owner" == "$POSTGRES_USER" || "$db_owner" == "postgres" ]] || die "La base $POSTGRES_DB pertenece a '$db_owner', no al usuario dedicado $POSTGRES_USER ni a postgres. No se cambiarán propietarios ni datos."
+    DB_PASSWORD="$(openssl rand -hex 32)"
+    log "Recuperando el rol PostgreSQL de una instalación local anterior..."
+    runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -p "$PG_PORT" -d postgres <<SQL
+SELECT format('ALTER ROLE %I WITH LOGIN PASSWORD %L', '$POSTGRES_USER', '$DB_PASSWORD')
+\gexec
+SQL
+    if [[ "$db_owner" == "postgres" ]]; then
+      log "Restaurando propiedad y permisos de la base existente..."
+      prepare_app_database_permissions
+    fi
   elif [[ "$role_exists" == "t" && "$db_exists" == "f" ]]; then
+    DB_PASSWORD="$(openssl rand -hex 32)"
     log "El usuario PostgreSQL ya existe; se creará únicamente la base de datos que falta..."
     runuser -u postgres -- createdb --port="$PG_PORT" --owner="$POSTGRES_USER" "$POSTGRES_DB"
     runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -p "$PG_PORT" -d postgres <<SQL
-ALTER ROLE $POSTGRES_USER WITH LOGIN PASSWORD '$DB_PASSWORD';
+SELECT format('ALTER ROLE %I WITH LOGIN PASSWORD %L', '$POSTGRES_USER', '$DB_PASSWORD')
+\gexec
 SQL
   elif [[ "$role_exists" == "f" && "$db_exists" == "f" ]]; then
+    DB_PASSWORD="$(openssl rand -hex 32)"
     log "Creando el usuario y la base de datos OpenTransfer..."
     # Send SQL through stdin; the generated password is not exposed in process arguments.
     runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -p "$PG_PORT" -d postgres <<SQL
@@ -451,7 +496,7 @@ SELECT format('CREATE DATABASE %I OWNER %I', '$POSTGRES_DB', '$POSTGRES_USER')
 \gexec
 SQL
   else
-    die "La base $POSTGRES_DB existe pero falta el rol $POSTGRES_USER. No se cambiará el propietario ni los permisos de una base existente automáticamente."
+    die "Estado de los recursos PostgreSQL inesperado. No se ha eliminado ni reemplazado ningún dato."
   fi
 
   DATABASE_URL="postgres://$POSTGRES_USER:$DB_PASSWORD@127.0.0.1:$PG_PORT/$POSTGRES_DB?sslmode=disable"
