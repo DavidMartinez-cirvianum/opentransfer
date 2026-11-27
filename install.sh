@@ -192,6 +192,12 @@ if [[ -f "$CONFIG_FILE" ]]; then
   BIND_ADDRESS="$(read_existing_config OT_BIND_ADDRESS)"
   PUBLIC_URL="$(read_existing_config OT_PUBLIC_URL)"
   DATABASE_URL="$(read_existing_config OT_DATABASE_URL)"
+  POSTGRES_MANAGED="$(read_existing_config OT_POSTGRES_MANAGED)"
+  POSTGRES_MANAGED="${POSTGRES_MANAGED:-0}"
+  POSTGRES_DB="$(read_existing_config POSTGRES_DB)"
+  POSTGRES_DB="${POSTGRES_DB:-opentransfer}"
+  POSTGRES_USER="$(read_existing_config POSTGRES_USER)"
+  POSTGRES_USER="${POSTGRES_USER:-opentransfer}"
   [[ -n "$STORAGE_BACKEND" && -n "$STORAGE_PATH" && -n "$HTTP_PORT" ]] || die "La configuración existente está incompleta. Revisa $CONFIG_FILE manualmente."
 fi
 [[ "$STORAGE_BACKEND" == "local" || "$STORAGE_BACKEND" == "nas" ]] || die "Backend de almacenamiento no válido en la configuración."
@@ -319,37 +325,6 @@ mkdir -p "$APP_ROOT/releases" "$CONFIG_DIR" "$DATA_DIR" "$BACKUP_DIR" "$STORAGE_
 chmod 750 "$APP_ROOT" "$APP_ROOT/releases" "$DATA_DIR" "$BACKUP_DIR" 2>/dev/null || true
 chmod 750 "$CONFIG_DIR"
 
-TMP_DIR="$(mktemp -d)"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
-if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/go.mod" && -f "$SCRIPT_DIR/Dockerfile" ]]; then
-  SOURCE_DIR="$SCRIPT_DIR"
-else
-  log "Descargando el código de OpenTransfer ($REF)..."
-  mkdir -p "$TMP_DIR/source"
-  curl --fail --silent --show-error --location --retry 3 "$REPO_API/tarball/$REF" -o "$TMP_DIR/source.tar.gz"
-  tar -xzf "$TMP_DIR/source.tar.gz" --strip-components=1 -C "$TMP_DIR/source"
-  SOURCE_DIR="$TMP_DIR/source"
-fi
-[[ -f "$SOURCE_DIR/VERSION" && -f "$SOURCE_DIR/go.mod" ]] || die "El código descargado no contiene VERSION/go.mod."
-VERSION="$(tr -d '[:space:]' < "$SOURCE_DIR/VERSION")"
-[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]] || die "VERSION no sigue el formato esperado: $VERSION"
-SHORT_SHA="local"
-if command -v git >/dev/null && git -C "$SOURCE_DIR" rev-parse --short=8 HEAD >/dev/null 2>&1; then
-  SHORT_SHA="$(git -C "$SOURCE_DIR" rev-parse --short=8 HEAD)"
-fi
-RELEASE_NAME="${VERSION}-${SHORT_SHA}"
-RELEASE_DIR="$APP_ROOT/releases/$RELEASE_NAME"
-# An interrupted earlier attempt may have left an inactive release directory.
-# Never delete it; use a unique new release path instead.
-if [[ -e "$RELEASE_DIR" ]]; then
-  RELEASE_NAME="${RELEASE_NAME}-retry-$(date -u +%Y%m%dT%H%M%SZ)"
-  RELEASE_DIR="$APP_ROOT/releases/$RELEASE_NAME"
-fi
-STAGE_DIR="$APP_ROOT/releases/.stage-$RELEASE_NAME-$$"
-mkdir -m 750 "$STAGE_DIR"
-tar --exclude=.git --exclude=backups --exclude=data -cf - -C "$SOURCE_DIR" . | tar -xf - -C "$STAGE_DIR"
-mv "$STAGE_DIR" "$RELEASE_DIR"
-
 if [[ ! -f "$CONFIG_FILE" ]]; then
   log "Generando configuración privada en $CONFIG_FILE..."
   if [[ "$MODE" == "docker" ]]; then
@@ -388,6 +363,38 @@ else
   warn "Ya existe $CONFIG_FILE. Se conserva sin sobrescribirlo."
   chmod 600 "$CONFIG_FILE"
 fi
+
+
+TMP_DIR="$(mktemp -d)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
+if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/go.mod" && -f "$SCRIPT_DIR/Dockerfile" ]]; then
+  SOURCE_DIR="$SCRIPT_DIR"
+else
+  log "Descargando el código de OpenTransfer ($REF)..."
+  mkdir -p "$TMP_DIR/source"
+  curl --fail --silent --show-error --location --retry 3 "$REPO_API/tarball/$REF" -o "$TMP_DIR/source.tar.gz"
+  tar -xzf "$TMP_DIR/source.tar.gz" --strip-components=1 -C "$TMP_DIR/source"
+  SOURCE_DIR="$TMP_DIR/source"
+fi
+[[ -f "$SOURCE_DIR/VERSION" && -f "$SOURCE_DIR/go.mod" ]] || die "El código descargado no contiene VERSION/go.mod."
+VERSION="$(tr -d '[:space:]' < "$SOURCE_DIR/VERSION")"
+[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]] || die "VERSION no sigue el formato esperado: $VERSION"
+SHORT_SHA="local"
+if command -v git >/dev/null && git -C "$SOURCE_DIR" rev-parse --short=8 HEAD >/dev/null 2>&1; then
+  SHORT_SHA="$(git -C "$SOURCE_DIR" rev-parse --short=8 HEAD)"
+fi
+RELEASE_NAME="${VERSION}-${SHORT_SHA}"
+RELEASE_DIR="$APP_ROOT/releases/$RELEASE_NAME"
+# An interrupted earlier attempt may have left an inactive release directory.
+# Never delete it; use a unique new release path instead.
+if [[ -e "$RELEASE_DIR" ]]; then
+  RELEASE_NAME="${RELEASE_NAME}-retry-$(date -u +%Y%m%dT%H%M%SZ)"
+  RELEASE_DIR="$APP_ROOT/releases/$RELEASE_NAME"
+fi
+STAGE_DIR="$APP_ROOT/releases/.stage-$RELEASE_NAME-$$"
+mkdir -m 750 "$STAGE_DIR"
+tar --exclude=.git --exclude=backups --exclude=data -cf - -C "$SOURCE_DIR" . | tar -xf - -C "$STAGE_DIR"
+mv "$STAGE_DIR" "$RELEASE_DIR"
 
 if [[ "$MODE" == "docker" ]]; then
   if [[ "$STORAGE_BACKEND" == "local" && "$STORAGE_PATH" == "$DATA_DIR/files" ]]; then
