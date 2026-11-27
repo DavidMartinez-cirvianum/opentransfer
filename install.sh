@@ -202,6 +202,11 @@ if [[ -f "$CONFIG_FILE" ]]; then
   DB_PASSWORD="$(read_existing_config POSTGRES_PASSWORD)"
   [[ -n "$STORAGE_BACKEND" && -n "$STORAGE_PATH" && -n "$HTTP_PORT" ]] || die "La configuración existente está incompleta. Revisa $CONFIG_FILE manualmente."
 fi
+[[ "$POSTGRES_DB" =~ ^[A-Za-z_][A-Za-z0-9_]{0,62}$ ]] || die "Nombre de base PostgreSQL inválido en la configuración."
+[[ "$POSTGRES_USER" =~ ^[A-Za-z_][A-Za-z0-9_]{0,62}$ ]] || die "Nombre de usuario PostgreSQL inválido en la configuración."
+[[ "$POSTGRES_DB" != "postgres" && "$POSTGRES_DB" != "template0" && "$POSTGRES_DB" != "template1" ]] || die "No se puede usar una base de sistema PostgreSQL para OpenTransfer."
+[[ "$POSTGRES_USER" != "postgres" ]] || die "No se puede usar el superusuario postgres para la aplicación."
+[[ "$POSTGRES_MANAGED" == "0" || "$POSTGRES_MANAGED" == "1" ]] || die "OT_POSTGRES_MANAGED debe ser 0 o 1 en la configuración."
 [[ "$STORAGE_BACKEND" == "local" || "$STORAGE_BACKEND" == "nas" ]] || die "Backend de almacenamiento no válido en la configuración."
 [[ "$HTTP_PORT" =~ ^[0-9]{1,5}$ ]] && ((HTTP_PORT > 0 && HTTP_PORT < 65536)) || die "Puerto inválido en la configuración."
 [[ "$STORAGE_PATH" == /* && "$STORAGE_PATH" != *" "* && "$STORAGE_PATH" != *":"* && "$STORAGE_PATH" != *"|"* ]] || die "Ruta de almacenamiento inválida en la configuración."
