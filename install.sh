@@ -270,9 +270,9 @@ install_local_postgres() {
   chmod 600 "$PG_SQL_FILE"
   cat > "$PG_SQL_FILE" <<SQL
 SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', '$POSTGRES_USER', '$DB_PASSWORD')
-\\gexec
+\gexec
 SELECT format('CREATE DATABASE %I OWNER %I', '$POSTGRES_DB', '$POSTGRES_USER')
-\\gexec
+\gexec
 SQL
   runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -p "$PG_PORT" -d postgres -f "$PG_SQL_FILE"
   rm -f -- "$PG_SQL_FILE"
