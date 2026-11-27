@@ -191,6 +191,13 @@ if [[ "$LISTEN_HOST" == *:* ]]; then
 else
   LISTEN_ADDR="$LISTEN_HOST:$HTTP_PORT"
 fi
+HEALTH_HOST="$BIND_ADDRESS"
+case "$HEALTH_HOST" in 0.0.0.0|::) HEALTH_HOST="127.0.0.1" ;; esac
+if [[ "$HEALTH_HOST" == *:* ]]; then
+  HEALTH_URL="http://[$HEALTH_HOST]:$HTTP_PORT"
+else
+  HEALTH_URL="http://$HEALTH_HOST:$HTTP_PORT"
+fi
 
 mkdir -p "$APP_ROOT/releases" "$CONFIG_DIR" "$DATA_DIR" "$BACKUP_DIR" "$STORAGE_PATH"
 chmod 750 "$APP_ROOT" "$APP_ROOT/releases" "$DATA_DIR" "$BACKUP_DIR" 2>/dev/null || true
@@ -278,7 +285,7 @@ if [[ "$MODE" == "docker" ]]; then
     log "Esperando a que la API responda..."
     READY=0
     for _ in {1..40}; do
-      if curl --fail --silent "http://127.0.0.1:$HTTP_PORT/readyz" >/dev/null; then READY=1; break; fi
+      if curl --fail --silent "$HEALTH_URL/readyz" >/dev/null; then READY=1; break; fi
       sleep 2
     done
     ((READY == 1)) || die "Los contenedores están instalados, pero /readyz no responde. Consulta docker compose logs."
