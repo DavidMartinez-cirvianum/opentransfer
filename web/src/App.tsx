@@ -2,33 +2,41 @@ import { useState } from "react";
 import {
   Activity, Archive, ArrowRight, Bell, CheckCircle2, Circle, Cloud,
   Database, Files, HardDrive, LayoutDashboard, LockKeyhole, Menu,
-  Network, ScrollText, Server, Settings, ShieldCheck, Users, X
+  Network, ScrollText, Server, Settings, ShieldCheck, Users, X,
+  Folder, UserPlus, Gauge, TerminalSquare
 } from "lucide-react";
 
 const navigation = [
   { title: "INICIO", items: [{ label: "Resumen", icon: LayoutDashboard }] },
-  { title: "GESTIÓN", items: [{ label: "Transferencias", icon: Files }, { label: "Usuarios", icon: Users }] },
-  { title: "CONFIGURACIÓN", items: [{ label: "Seguridad", icon: ShieldCheck }, { label: "Almacenamiento", icon: HardDrive }, { label: "Dominio y HTTPS", icon: Network }, { label: "Copias de seguridad", icon: Archive }] },
-  { title: "SISTEMA", items: [{ label: "Auditoría", icon: ScrollText }, { label: "Sistema", icon: Settings }] },
+  { title: "GESTIÓN", items: [{ label: "Transferencias", icon: Files }, { label: "Carpetas", icon: Folder }, { label: "Usuarios", icon: Users }, { label: "Invitados", icon: UserPlus }] },
+  { title: "POLÍTICAS", items: [{ label: "Cuotas y límites", icon: Gauge }, { label: "Seguridad", icon: ShieldCheck }] },
+  { title: "INFRAESTRUCTURA", items: [{ label: "Almacenamiento", icon: HardDrive }, { label: "Dominio y HTTPS", icon: Network }, { label: "Copias de seguridad", icon: Archive }] },
+  { title: "TRAZABILIDAD", items: [{ label: "Auditoría", icon: ScrollText }, { label: "Registros", icon: TerminalSquare }] },
+  { title: "SISTEMA", items: [{ label: "Sistema", icon: Settings }] },
 ];
 
 const setupSteps = [
   { title: "Crear el primer administrador", detail: "Asistente seguro de configuración inicial", status: "Pendiente" },
   { title: "Configurar el almacenamiento", detail: "Elegir una ruta local y comprobar permisos", status: "Pendiente" },
   { title: "Configurar dominio y HTTPS", detail: "Definir la URL pública y el proxy inverso", status: "Pendiente" },
+  { title: "Definir cuotas y límites", detail: "Separar tamaño máximo por archivo y GB por usuario", status: "Pendiente" },
   { title: "Activar autenticación multifactor", detail: "Proteger las cuentas administrativas con TOTP", status: "Pendiente" },
   { title: "Configurar copias de seguridad", detail: "Respaldar base de datos, archivos y claves", status: "Pendiente" },
 ];
 
 const modules: Record<string, { intro: string; tasks: string[] }> = {
-  Transferencias: { intro: "Controla los envíos, enlaces externos, caducidad y descargas.", tasks: ["Crear y consultar transferencias", "Revocar enlaces de descarga", "Consultar caducidad y descargas restantes"] },
-  Usuarios: { intro: "Gestiona quién puede utilizar esta instancia y qué permisos tiene.", tasks: ["Crear y desactivar usuarios", "Asignar roles de administrador y miembro", "Revocar sesiones y configurar MFA"] },
+  Transferencias: { intro: "Controla los envíos, enlaces externos, caducidad y descargas.", tasks: ["Crear y consultar transferencias", "Revocar enlaces de descarga", "Consultar caducidad y descargas restantes", "Filtrar por propietario, carpeta, estado y fecha"] },
+  Carpetas: { intro: "Organiza archivos y transferencias en espacios personales o compartidos, con permisos separados.", tasks: ["Crear carpetas y subcarpetas lógicas", "Asignar propietario y permisos de lectura, subida, compartición y administración", "Compartir una carpeta con miembros o invitados concretos", "Consultar el uso y la cuota del espacio", "Impedir que una persona acceda a carpetas fuera de su ámbito"] },
+  Usuarios: { intro: "Gestiona cuentas internas, roles, sesiones y límites individuales.", tasks: ["Crear, editar, desactivar y reactivar usuarios", "Asignar roles y permisos", "Definir cuota total de almacenamiento por usuario", "Definir tamaño máximo por archivo", "Consultar consumo, subidas pendientes y espacio disponible", "Revocar sesiones y configurar MFA"] },
+  Invitados: { intro: "Invita a personas externas sin convertirlas en miembros de la organización.", tasks: ["Enviar invitaciones por correo con caducidad", "Limitar el acceso a una carpeta o transferencia concreta", "Elegir permisos de lectura y, si se autoriza, subida", "Revocar invitaciones y accesos", "Consultar aceptación, última actividad y expiración", "Mantener a los invitados fuera de la administración y del resto de carpetas"] },
+  "Cuotas y límites": { intro: "Administra por separado el espacio total de cada usuario y el tamaño de cada subida.", tasks: ["Cuota total en GB por usuario", "Tamaño máximo en GB por archivo", "Valores predeterminados y excepciones individuales", "Cuotas opcionales para carpetas compartidas", "Reservar espacio durante subidas simultáneas y liberarlo si fallan", "Avisos al alcanzar umbrales de uso y bloqueos al superar límites"] },
   Seguridad: { intro: "Define las políticas que se aplicarán a todas las transferencias y cuentas.", tasks: ["Política de contraseñas y MFA obligatorio", "Caducidad y número máximo de descargas", "Límites de tamaño, cuotas y protección contra intentos abusivos", "Restricciones por IP y sesiones"] },
   Almacenamiento: { intro: "Elige dónde se guardarán los archivos. Cada transferencia quedará asociada a un destino.", tasks: ["Disco local del servidor (primera implementación)", "NAS montado en Linux", "Almacenamiento compatible con S3"] },
   "Dominio y HTTPS": { intro: "Configura cómo accederán los usuarios a OpenTransfer desde Internet o la red corporativa.", tasks: ["URL pública de la instancia", "Proxy inverso Caddy o Nginx", "Certificado TLS y comprobación HTTPS"] },
   "Copias de seguridad": { intro: "Una copia recuperable debe incluir datos, archivos, configuración y las claves necesarias.", tasks: ["Programar copias de PostgreSQL", "Respaldar los archivos almacenados", "Proteger y respaldar las claves de cifrado", "Probar la restauración"] },
-  Auditoría: { intro: "Consulta las acciones administrativas y los eventos relevantes de seguridad.", tasks: ["Inicios de sesión y fallos de autenticación", "Creación, descarga y revocación de transferencias", "Cambios de políticas y configuración"] },
-  Sistema: { intro: "Información operativa y mantenimiento de la instancia.", tasks: ["Estado de API y base de datos", "Versión instalada y actualizaciones", "Diagnóstico, registros y mantenimiento"] },
+  Auditoría: { intro: "Consulta el historial de acciones de usuarios, invitados y administradores.", tasks: ["Inicios de sesión, MFA, fallos y revocaciones de sesión", "Invitaciones, cambios de permisos y accesos a carpetas", "Subidas, descargas, rechazos y revocaciones", "Cambios de cuota, políticas, almacenamiento y configuración", "Filtros por actor, acción, recurso, resultado y fecha", "Exportación controlada y política de retención"] },
+  Registros: { intro: "Diagnostica el funcionamiento de OpenTransfer. Los registros técnicos no sustituyen a la auditoría.", tasks: ["Logs estructurados de API y tareas en segundo plano", "Errores de base de datos, almacenamiento y correo", "Niveles de severidad y filtros temporales", "Correlación mediante request ID", "Acceso y exportación restringidos y auditados", "Ocultar siempre contraseñas, cookies, tokens completos y claves"] },
+  Sistema: { intro: "Información operativa, estado y mantenimiento de la instancia.", tasks: ["Estado de API, base de datos y almacenamiento", "Versión instalada y notas de actualización", "Diagnóstico y tareas de mantenimiento", "Historial de actualizaciones y resultado de health checks"] },
 };
 
 function App() {
@@ -81,7 +89,7 @@ function Overview({onNavigate}:{onNavigate:(page:string)=>void}) {
     <div className="mb-6 flex items-start gap-3 rounded-xl border border-blue-200 bg-blue-50 p-4"><div className="mt-0.5 text-blue-600"><ShieldCheck size={19}/></div><div><div className="text-sm font-semibold text-blue-950">Primero, una base segura</div><p className="mt-1 text-xs leading-5 text-blue-800">Los indicadores de esta versión son informativos. La autenticación, las políticas y el almacenamiento todavía deben implementarse en el backend Go.</p></div></div>
     <div className="grid gap-5 xl:grid-cols-[1.4fr_1fr]">
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-        <div className="flex items-center justify-between"><div><h3 className="text-sm font-semibold text-slate-900">Lista de puesta en marcha</h3><p className="mt-1 text-xs text-slate-400">Pasos necesarios antes de producción</p></div><span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-semibold text-slate-600">0 de 5 completados</span></div>
+        <div className="flex items-center justify-between"><div><h3 className="text-sm font-semibold text-slate-900">Lista de puesta en marcha</h3><p className="mt-1 text-xs text-slate-400">Pasos necesarios antes de producción</p></div><span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-semibold text-slate-600">0 de 6 completados</span></div>
         <div className="mt-5 space-y-1">{setupSteps.map((step,i)=><div key={step.title} className="flex gap-3 rounded-xl px-2 py-3"><div className="mt-0.5 text-slate-300"><Circle size={18}/></div><div className="min-w-0 flex-1"><div className="text-xs font-semibold text-slate-800">{i+1}. {step.title}</div><div className="mt-1 text-[11px] text-slate-400">{step.detail}</div></div><span className="text-[10px] font-medium text-slate-400">{step.status}</span></div>)}</div>
       </section>
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
@@ -90,7 +98,7 @@ function Overview({onNavigate}:{onNavigate:(page:string)=>void}) {
         <button onClick={()=>onNavigate("Sistema")} className="mt-5 flex w-full items-center justify-center gap-2 rounded-lg border border-slate-200 py-2.5 text-xs font-semibold text-slate-600 hover:bg-slate-50">Ver sistema <ArrowRight size={14}/></button>
       </section>
     </div>
-    <section className="mt-5"><div className="mb-3"><h3 className="text-sm font-semibold text-slate-900">Administración</h3><p className="mt-1 text-xs text-slate-400">Accesos a los módulos previstos para el MVP</p></div><div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><QuickCard icon={Files} title="Transferencias" detail="Enlaces, caducidad y descargas" onClick={()=>onNavigate("Transferencias")}/><QuickCard icon={Users} title="Usuarios" detail="Cuentas, roles y sesiones" onClick={()=>onNavigate("Usuarios")}/><QuickCard icon={ShieldCheck} title="Seguridad" detail="MFA, límites y políticas" onClick={()=>onNavigate("Seguridad")}/><QuickCard icon={HardDrive} title="Almacenamiento" detail="Local, NAS y S3" onClick={()=>onNavigate("Almacenamiento")}/></div></section>
+    <section className="mt-5"><div className="mb-3"><h3 className="text-sm font-semibold text-slate-900">Administración</h3><p className="mt-1 text-xs text-slate-400">Accesos a los módulos previstos para el MVP</p></div><div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><QuickCard icon={Files} title="Transferencias" detail="Enlaces y descargas" onClick={()=>onNavigate("Transferencias")}/><QuickCard icon={Folder} title="Carpetas" detail="Espacios y permisos" onClick={()=>onNavigate("Carpetas")}/><QuickCard icon={Users} title="Usuarios" detail="Cuentas y cuotas" onClick={()=>onNavigate("Usuarios")}/><QuickCard icon={UserPlus} title="Invitados" detail="Acceso externo limitado" onClick={()=>onNavigate("Invitados")}/><QuickCard icon={Gauge} title="Cuotas" detail="GB y tamaño por subida" onClick={()=>onNavigate("Cuotas y límites")}/><QuickCard icon={ScrollText} title="Auditoría" detail="Trazabilidad de acciones" onClick={()=>onNavigate("Auditoría")}/><QuickCard icon={TerminalSquare} title="Registros" detail="Diagnóstico técnico" onClick={()=>onNavigate("Registros")}/><QuickCard icon={HardDrive} title="Almacenamiento" detail="Local, NAS y S3" onClick={()=>onNavigate("Almacenamiento")}/></div></section>
   </>;
 }
 
