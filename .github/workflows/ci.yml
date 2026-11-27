@@ -67,7 +67,7 @@ jobs:
             --backup-dir /tmp/opentransfer-ci-second/backups \
             --bind 127.0.0.1 --port 24568 --yes --no-start
 
-          grep -qx 'OT_POSTGRES_MANAGED=1' /tmp/opentransfer-ci-second/config/instance.env
-          grep -qx 'POSTGRES_PASSWORD=ci-secret' /tmp/opentransfer-ci-second/config/instance.env
-          grep -Fqx 'OT_DATABASE_URL=postgres://opentransfer_ci:ci-secret@127.0.0.1:5432/opentransfer_ci?sslmode=disable' /tmp/opentransfer-ci-second/config/instance.env
-          compgen -G '/tmp/opentransfer-ci-second/config/instance.env.backup.*' >/dev/null
+          sudo grep -qx 'OT_POSTGRES_MANAGED=1' /tmp/opentransfer-ci-second/config/instance.env
+          sudo grep -qx 'POSTGRES_PASSWORD=ci-secret' /tmp/opentransfer-ci-second/config/instance.env
+          sudo grep -Fqx 'OT_DATABASE_URL=postgres://opentransfer_ci:ci-secret@127.0.0.1:5432/opentransfer_ci?sslmode=disable' /tmp/opentransfer-ci-second/config/instance.env
+          sudo find /tmp/opentransfer-ci-second/config -maxdepth 1 -name 'instance.env.backup.*' -print -quit | grep -q .
