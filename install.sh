@@ -254,6 +254,7 @@ install_local_postgres() {
   fi
   [[ -n "$cluster" ]] || die "No hay ningún clúster PostgreSQL en línea."
   read -r version name port <<< "$cluster"
+  [[ "$port" =~ ^[0-9]{1,5}$ ]] || die "No se pudo detectar un puerto válido del clúster PostgreSQL (obtenido: '$port')."
   PG_PORT="$port"
 
   local role_exists db_exists
@@ -271,7 +272,7 @@ SELECT format('CREATE DATABASE %I OWNER %I', '$POSTGRES_DB', '$POSTGRES_USER')
 \gexec
 SQL
   DATABASE_URL="postgres://$POSTGRES_USER:$DB_PASSWORD@127.0.0.1:$PG_PORT/$POSTGRES_DB?sslmode=disable"
-  PGPASSWORD="$DB_PASSWORD" psql "host=127.0.0.1 port=$PG_PORT dbname=$POSTGRES_DB user=$POSTGRES_USER" -X -A -t -v ON_ERROR_STOP=1 -c "SELECT 1" | grep -qx "1" || die "PostgreSQL se ha configurado, pero no se ha podido validar la conexión TCP."
+  PGPASSWORD="$DB_PASSWORD" psql -X -h 127.0.0.1 -p "$PG_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -A -t -v ON_ERROR_STOP=1 -c "SELECT 1" | grep -qx "1" || die "PostgreSQL se ha configurado, pero no se ha podido validar la conexión TCP."
   POSTGRES_MANAGED=1
 }
 
