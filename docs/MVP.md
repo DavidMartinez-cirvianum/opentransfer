@@ -1,89 +1,160 @@
 # OpenTransfer MVP
 
-## Goal
-Deliver one dependable, self-hosted workflow for an organization to send files to external recipients without creating recipient accounts. The MVP is a secure file-transfer appliance, not a general cloud drive.
+## Objetivo
 
-## The first complete user journey
-1. An administrator installs OpenTransfer on a supported Linux server.
-2. The installer creates a dedicated service account, configures the service and guides the operator through first-admin creation.
-3. The administrator signs in with MFA and configures the public URL, one storage destination, SMTP (optional for the first local test), and transfer defaults.
-4. An authenticated employee uploads a file, chooses an expiration and download limit, and optionally adds a password.
-5. OpenTransfer returns a high-entropy download link. The recipient can download without an account, subject to the configured policy.
-6. The employee or administrator can revoke the link. Administrators can inspect the transfer's metadata and audit events.
-7. Expired or revoked transfer data is removed by a background cleanup job according to retention settings.
+Entregar un flujo autoalojado y administrable para que una organización almacene, organice y comparta archivos con usuarios internos e invitados externos, con políticas de seguridad y trazabilidad. No es una suite general de sincronización de archivos.
 
-## MVP feature boundary
+## Usuarios y acceso
 
-### P0 — required for a usable MVP
-- Single organization / single instance.
-- One local filesystem storage destination. The storage interface must allow NAS and S3 adapters later.
-- PostgreSQL for users, sessions, transfer metadata, policy and audit metadata.
-- Go modular monolith; React + TypeScript + Tailwind admin and employee web UI.
-- First-admin bootstrap with a one-time setup token or interactive local CLI. Never ship a default password.
-- Password hashing with Argon2id; MFA using TOTP; session revocation and secure cookie settings.
-- RBAC with at least admin and member roles.
-- Upload with streaming and configurable maximum file size.
-- Server-managed authenticated encryption at rest using maintained cryptographic packages. Per-file data keys; key-encryption key supplied separately from PostgreSQL and file storage.
-- Download links generated from cryptographically secure random tokens; persist only token hashes.
-- Optional link password, expiration, maximum download count, manual revocation.
-- Atomic download-count enforcement to prevent concurrent requests exceeding the limit.
-- Basic per-user quotas, rate limits and login throttling.
-- Audit events for sign-in, failed sign-in, upload, download, revocation, policy and admin changes.
-- HTTPS deployment guidance, health checks, structured logs and tested backup/restore procedure.
-- Docker Compose deployment first. Native systemd installation follows once the same configuration and lifecycle are stable.
+### Roles iniciales
+- **Administrador:** configura la instancia, usuarios, políticas, almacenamiento y auditoría.
+- **Miembro:** crea y gestiona sus transferencias y carpetas según sus permisos.
+- **Invitado:** cuenta externa limitada al contenido o carpeta que se le ha compartido. No tiene acceso general a la organización ni al panel administrativo.
 
-### P1 — after the first end-to-end release
-- NAS storage destination via a host-mounted path, with mount/permission/health validation.
-- S3-compatible storage adapter.
-- Multiple storage destinations and per-transfer destination selection.
-- SMTP notifications and branded email templates.
-- IP allow/deny policies and trusted-proxy configuration.
-- Configurable retention, backup schedules and restore wizard.
-- WebAuthn/passkeys, stronger role granularity and group management.
-- Caddy-assisted domain and TLS setup.
+El backend aplicará siempre la autorización. Ocultar un botón en React no es un control de seguridad.
 
-### P2 — advanced / business roadmap
-- E2EE transfer mode, only after a separately reviewed protocol and browser threat model.
-- OIDC / SAML SSO, LDAP / Active Directory.
-- Malware scanning, DLP integrations and advanced compliance exports.
-- Desktop and mobile clients.
-- Multi-tenant hosting, clustering, high availability and enterprise support.
+### Invitaciones
+- Invitación por correo con token aleatorio de un solo uso y caducidad.
+- Posibilidad de revocar invitaciones pendientes y accesos concedidos.
+- Ámbito explícito: una transferencia o carpeta concreta.
+- Verificación de correo; MFA según política cuando el riesgo lo requiera.
+- Subida por parte de invitados desactivada por defecto; un miembro autorizado o administrador podrá concederla expresamente.
+- Límites propios para invitados y registro de aceptación, expiración y revocación.
 
-## Explicit non-goals for MVP
-- Not a replacement for Nextcloud or a team file-sync drive.
-- No public anonymous upload portal in the first release.
-- No claim that the system is unhackable or automatically GDPR-compliant.
-- No custom cryptography.
-- No E2EE and server-readable encryption on the same transfer. They are distinct modes with different security and operational properties.
-- No multi-node clustering or automatic replication between storage providers.
-- No installer that silently changes firewall, SSH, DNS or existing reverse-proxy configuration.
+## Carpetas
 
-## Admin panel navigation
-1. Overview: setup checklist, service health, storage health and recent security events.
-2. Transfers: search, inspect, revoke and view expiration / download counts.
-3. Users: create, disable and assign roles; reset access safely.
-4. Security: password policy, MFA requirement, session lifetime, link defaults, rate limits and IP policy.
-5. Storage: configure and test local path; later NAS and S3.
-6. Domain & TLS: public URL and reverse-proxy / certificate status.
-7. Backups: destination, last successful backup, restore guidance and key-material warning.
-8. Audit: filter security and administrative events.
-9. System: version, health, logs, configuration validation and maintenance.
+- Carpetas personales y compartidas para organizar archivos y transferencias.
+- Jerarquía lógica de carpetas; el cliente nunca construye rutas físicas del almacenamiento.
+- Propietario y permisos de lectura, subida, compartición y administración.
+- Permisos heredados de forma explícita y comprobada en servidor.
+- Compartir una carpeta con un invitado no da acceso a otras carpetas ni a la organización.
+- No incluye sincronización de escritorio, edición colaborativa ni gestión documental general.
 
-A control must not be presented as active until the backend enforces it. The UI must distinguish saved server settings from local draft values and must never display secrets after they are saved.
+## Cuotas y límites
 
-## Security acceptance criteria
-- Unauthenticated users cannot access admin APIs or private transfer metadata.
-- Admin endpoints enforce authorization server-side; hiding UI controls is not authorization.
-- Passwords, session identifiers, raw download tokens and encryption keys never appear in logs.
-- Download token hashes are compared safely and tokens have sufficient entropy.
-- Concurrent download attempts cannot exceed the configured download count.
-- Expiration and revocation block new downloads immediately.
-- Uploads enforce size limits while streaming and do not trust client-provided filename or MIME type.
-- File storage is outside the public web root and cannot be executed as web content.
-- CSRF, XSS, SQL injection, path traversal and IDOR tests are included.
-- Encryption keys are stored separately from database and file backups; recovery is tested.
-- Backup restore is tested on a clean environment.
-- Dependency scanning, static analysis and an independent security review are completed before production security claims.
+Deben distinguirse:
+1. **Máximo por archivo:** tamaño máximo de cada subida.
+2. **Cuota total por usuario:** máximo de GB ocupados por archivos atribuibles al usuario.
+3. **Cuota de carpeta/espacio compartido:** opcional, cuando se implemente la administración de espacios compartidos.
+4. **Límites de transferencia:** expiración, número máximo de descargas y tamaño permitido.
 
-## Current repository status
-The current React admin interface is a visual prototype. It is not connected to a backend, does not authenticate users and does not apply real security settings. The MVP implementation starts with the Go API, PostgreSQL migrations, secure first-admin bootstrap and the first end-to-end upload/download path.
+El administrador podrá definir valores predeterminados y excepciones por usuario. El panel mostrará cuota asignada, uso confirmado, subidas pendientes y espacio disponible. Los invitados tendrán límites restringidos propios; por defecto no podrán subir.
+
+El servidor reservará cuota al iniciar una subida, validará el flujo mientras recibe datos, confirmará el tamaño final y liberará reservas ante errores o cancelaciones. Las reservas y consumos se actualizarán de forma transaccional para impedir que subidas simultáneas superen los límites. Los archivos eliminados o cuya retención expire liberarán espacio según la política y el resultado real del borrado.
+
+## Flujo de transferencia
+
+1. Un miembro autenticado elige una carpeta y sube un archivo.
+2. El servidor aplica permisos, cuota, límite por archivo y política de almacenamiento.
+3. OpenTransfer crea un enlace de descarga con token de alta entropía; la base de datos guarda solo el hash del token.
+4. El propietario puede fijar expiración, contraseña opcional y número máximo de descargas.
+5. El destinatario descarga según la política. Puede ser un destinatario por enlace o un invitado autenticado con acceso a una carpeta.
+6. El propietario o un administrador revoca el enlace; la revocación y caducidad bloquean nuevas descargas.
+7. Los datos se eliminan de acuerdo con la política de retención y las reglas de backup.
+
+## Auditoría y logs
+
+La auditoría y los logs técnicos son funciones distintas.
+
+### Auditoría de seguridad y negocio
+Registrar, como mínimo:
+- Inicios de sesión, cierres de sesión, MFA, fallos y revocación de sesiones.
+- Creación, desactivación y cambios de rol de usuarios.
+- Invitaciones enviadas, aceptadas, expiradas y revocadas.
+- Creación de carpetas, cambios de permisos y comparticiones.
+- Subidas iniciadas, completadas, rechazadas y canceladas.
+- Descargas, enlaces creados, expirados y revocados.
+- Cuotas y políticas modificadas o alcanzadas.
+- Cambios de almacenamiento, configuración, backups y actualizaciones.
+- Consulta y exportación de registros de auditoría.
+
+Cada evento tendrá fecha, actor, acción, recurso, resultado y request ID; IP y datos de cliente se guardarán solo cuando sean necesarios y conforme a una política de retención. La auditoría será de solo anexado para el rol de aplicación, con acceso administrativo restringido.
+
+### Logs operativos
+Logs estructurados para API, base de datos, tareas en segundo plano, almacenamiento, correo y mantenimiento. Incluirán niveles y request ID para diagnóstico. No contendrán contraseñas, cookies, tokens completos, claves, URLs con secretos ni contenido de archivos.
+
+## P0 — MVP funcional
+
+- Una organización y una instancia.
+- Go modular monolith, API versionada, React + TypeScript + Tailwind.
+- PostgreSQL para identidad, permisos, metadatos, cuotas, políticas y auditoría.
+- Almacenamiento local inicial, fuera del webroot, mediante una interfaz que permita NAS y S3 posteriormente.
+- Primer administrador mediante CLI o token de configuración de un solo uso; nunca una contraseña predeterminada.
+- Argon2id, TOTP, sesiones seguras/revocables y RBAC.
+- Usuarios internos y rol invitado limitado, con invitaciones seguras por correo.
+- Carpetas personales y compartidas con permisos comprobados en backend.
+- Cuota total por usuario y máximo por archivo, con reservas concurrentes.
+- Subidas y descargas en streaming.
+- Cifrado gestionado por el servidor en reposo con claves fuera de PostgreSQL y almacenamiento.
+- Enlaces protegidos, contraseña opcional, expiración, límite de descargas y revocación.
+- Auditoría de acciones sensibles y logs técnicos estructurados.
+- Límites de tasa, protección de inicio de sesión, límites de tamaño y validación de configuración.
+- Docker Compose para desarrollo y primer despliegue controlado; instalación Linux nativa posteriormente.
+- Health checks, copias de seguridad y procedimiento de restauración probado antes de producción.
+
+## P1 — después del primer flujo completo
+
+- NAS mediante ruta montada y validación de salud/permisos.
+- Almacenamiento S3-compatible y selección de destino por transferencia.
+- Cuotas por espacios compartidos y grupos.
+- SMTP completo, plantillas y notificaciones.
+- Política de IP y configuración de proxy de confianza.
+- Exportación avanzada de auditoría, syslog/SIEM y retención programada.
+- WebAuthn/passkeys y roles administrativos granulares.
+- Instalador nativo systemd y actualizaciones incrementales versionadas.
+
+## P2 — hoja de ruta empresarial
+
+- E2EE con protocolo, modelo de amenazas y revisión independiente.
+- OIDC/SAML, LDAP y Active Directory.
+- Antivirus/DLP.
+- Aplicaciones de escritorio y móviles.
+- Alta disponibilidad y multi-nodo.
+
+## No objetivos
+
+- No es un sustituto completo de Nextcloud, Dropbox o un sistema de sincronización.
+- No se habilita subida anónima pública por defecto.
+- No se promete seguridad absoluta ni cumplimiento RGPD automático.
+- No se implementa criptografía propia.
+- No se mezclan E2EE y contenido legible por el servidor en una misma transferencia.
+- No se hace migración silenciosa de archivos entre proveedores.
+- No se modifican firewall, SSH, DNS ni proxy existente sin consentimiento.
+
+## Navegación del panel de administración
+
+1. Resumen y estado de la instancia.
+2. Transferencias.
+3. Carpetas y permisos.
+4. Usuarios internos.
+5. Invitados e invitaciones.
+6. Cuotas y límites.
+7. Seguridad y sesiones.
+8. Almacenamiento.
+9. Dominio y HTTPS.
+10. Copias de seguridad.
+11. Auditoría.
+12. Logs técnicos.
+13. Sistema y actualizaciones.
+
+Un control solo se mostrará como activo cuando el backend lo aplique y existan pruebas. Los secretos no se devolverán por API ni se volverán a mostrar después de guardarlos.
+
+## Criterios de aceptación de seguridad
+
+- No hay acceso sin autenticación a la administración o metadatos privados.
+- Permisos y límites comprobados en backend en cada operación.
+- Invitados aislados a la carpeta/transferencia autorizada.
+- No hay acceso horizontal entre usuarios, carpetas u organizaciones.
+- Las cuotas resisten subidas simultáneas, fallos, cancelaciones y reintentos.
+- Los tokens se generan con CSPRNG y solo se guardan sus hashes.
+- La expiración y revocación bloquean el acceso inmediatamente.
+- Las subidas se validan en streaming; no se confía en nombre o MIME del cliente.
+- No hay traversal, IDOR, SQLi, XSS ni CSRF en los flujos probados.
+- Los logs y auditoría no contienen secretos.
+- Las claves están separadas de la base de datos y los archivos; recuperación probada.
+- Restauración de backup probada en entorno limpio.
+- Análisis de dependencias, pruebas de seguridad y revisión independiente antes de afirmar que está listo para producción.
+
+## Estado actual del repositorio
+
+El panel React es un prototipo visual. No está conectado al backend, no autentica usuarios, no persiste carpetas ni cuotas y no registra eventos reales. La implementación comienza por la base Go/PostgreSQL y después aborda usuarios, invitados, carpetas y límites. Este documento define el objetivo; no afirma que esas funciones ya existan.
