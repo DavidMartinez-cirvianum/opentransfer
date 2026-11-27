@@ -269,8 +269,9 @@ install_local_postgres() {
     db_owner="$(runuser -u postgres -- psql -X -A -t -p "$PG_PORT" -d postgres -v ON_ERROR_STOP=1 -c "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = '$POSTGRES_DB'")"
     [[ "$db_owner" == "$POSTGRES_USER" ]] || die "Ya existen $POSTGRES_USER/$POSTGRES_DB, pero la base no pertenece al usuario de OpenTransfer (propietario: '$db_owner'). No se modificará nada."
     log "Recuperando la base de datos de una instalación anterior incompleta..."
-    runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -p "$PG_PORT" -d postgres \\
-      -c "ALTER ROLE \"$POSTGRES_USER\" WITH LOGIN PASSWORD '$DB_PASSWORD'"
+    runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -p "$PG_PORT" -d postgres <<SQL
+ALTER ROLE $POSTGRES_USER WITH LOGIN PASSWORD '$DB_PASSWORD';
+SQL
   elif [[ "$role_exists" == "f" && "$db_exists" == "f" ]]; then
     log "Creando el usuario y la base de datos OpenTransfer..."
     # Feed SQL through stdin: the generated password is not exposed in process arguments or a file.
