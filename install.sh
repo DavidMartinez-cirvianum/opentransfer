@@ -135,15 +135,22 @@ else
 fi
 [[ "$STORAGE_BACKEND" == "local" || "$STORAGE_BACKEND" == "nas" ]] || die "Backend de almacenamiento no válido."
 [[ "$HTTP_PORT" =~ ^[0-9]{1,5}$ ]] && ((HTTP_PORT > 0 && HTTP_PORT < 65536)) || die "Puerto inválido."
-[[ "$BIND_ADDRESS" =~ ^[0-9a-fA-F:.]+$ ]] || die "Dirección de bind inválida."
+[[ "$BIND_ADDRESS" == "localhost" || "$BIND_ADDRESS" =~ ^[0-9a-fA-F:.]+$ ]] || die "Dirección de bind inválida (usa localhost o una dirección IP).
 [[ "$STORAGE_PATH" == /* && "$STORAGE_PATH" != *" "* && "$STORAGE_PATH" != *":"* && "$STORAGE_PATH" != *"|"* ]] || die "La ruta de almacenamiento debe ser absoluta y no contener espacios, ':' ni '|'."
 [[ "$PUBLIC_URL" == "" || "$PUBLIC_URL" =~ ^https?://[^[:space:]]+$ ]] || die "URL pública inválida (usa http:// o https://)."
 if ss -ltn | awk -v p=":$HTTP_PORT" '$4 ~ p"$" {found=1} END {exit !found}'; then
   die "El puerto $HTTP_PORT ya está ocupado. Elige otro puerto o configura tu proxy."
 fi
 if [[ -z "$PUBLIC_URL" ]]; then
-  HOST_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
-  PUBLIC_URL="http://${HOST_IP:-127.0.0.1}:$HTTP_PORT"
+  case "$BIND_ADDRESS" in
+    0.0.0.0|::) URL_HOST="$(hostname -I 2>/dev/null | awk '{print $1}')"; URL_HOST="${URL_HOST:-127.0.0.1}" ;;
+    *) URL_HOST="$BIND_ADDRESS" ;;
+  esac
+  if [[ "$URL_HOST" == *:* ]]; then
+    PUBLIC_URL="http://[$URL_HOST]:$HTTP_PORT"
+  else
+    PUBLIC_URL="http://$URL_HOST:$HTTP_PORT"
+  fi
 fi
 if [[ "$STORAGE_BACKEND" == "nas" ]]; then
   [[ -d "$STORAGE_PATH" ]] || die "La ruta NAS debe existir y estar montada antes de instalar."
