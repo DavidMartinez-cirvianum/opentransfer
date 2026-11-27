@@ -177,9 +177,9 @@ if [[ "$MODE" == "native" && -z "$DATABASE_URL" ]]; then
   if ((ASSUME_YES == 1)); then
     die "Modo native requiere --database-url. Consulta docs/INSTALLATION.md para crear la base de datos PostgreSQL."
   fi
-  printf '\\nOpenTransfer no instala PostgreSQL en modo native. Debes indicar una base de datos ya creada.\\n'
+  printf '\nOpenTransfer no instala PostgreSQL en modo native. Debes indicar una base de datos ya creada.\n'
   read -r -s -p "URL PostgreSQL (por ejemplo postgres://usuario:clave@127.0.0.1:5432/opentransfer?sslmode=disable): " DATABASE_URL
-  printf '\\n'
+  printf '\n'
 fi
 if [[ "$MODE" == "native" ]]; then
   [[ "$DATABASE_URL" =~ ^postgres(ql)?://[^[:space:]]+$ ]] || die "URL PostgreSQL vacía o inválida. Usa postgres:// o postgresql:// con host y base de datos."
