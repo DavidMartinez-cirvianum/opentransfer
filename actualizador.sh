@@ -129,7 +129,7 @@ rollback() {
 if [[ "$MODE" == "docker" ]]; then
   if ! compose_new up -d --no-deps app; then rollback; die "No se pudo iniciar el nuevo servicio."; fi
 else
-  systemctl restart opentransfer
+  if ! systemctl restart opentransfer; then rollback; die "No se pudo reiniciar systemd; se ha restaurado el release anterior."; fi
 fi
 
 READY=0
