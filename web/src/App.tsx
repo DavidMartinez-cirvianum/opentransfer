@@ -1,6 +1,6 @@
 import { useState } from "react";
 import {
-  Activity, ArrowDownToLine, ArrowUpRight, Bell, Check, ChevronDown,
+  Activity, ArrowUpRight, Bell, Check, ChevronDown,
   CircleHelp, Cloud, Database, Download, FileCheck2, Files, HardDrive,
   LayoutDashboard, LockKeyhole, Menu, MoreHorizontal, Network, Plus,
   Search, Server, Settings, Shield, ShieldCheck, Users, X
