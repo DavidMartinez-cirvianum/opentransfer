@@ -37,7 +37,7 @@ La instalación nativa puede configurar PostgreSQL de dos formas. Si ejecutas el
 1. **Instalar PostgreSQL localmente (recomendado):** en Debian/Ubuntu instala los paquetes mediante APT si faltan, inicia el servicio, crea un usuario y una base de datos exclusivos para OpenTransfer, genera una contraseña aleatoria y guarda la conexión en el archivo privado de configuración.
 2. **Usar un PostgreSQL existente:** te pedirá la URL de conexión con la contraseña oculta mientras escribes.
 
-La opción automática requiere permisos root y conexión a los repositorios APT. No altera roles ni bases de datos existentes: si encuentra el nombre elegido ocupado, se detiene sin modificarlo. Puedes elegir otro nombre con `--postgres-db` y `--postgres-user`.
+La opción automática requiere permisos root y conexión a los repositorios APT. No elimina bases de datos ni datos existentes. Si encuentra el rol y la base de OpenTransfer, comprueba que la base pertenece a ese rol y valida la autenticación; si la URL local guardada ya funciona, conserva la contraseña. Si la autenticación guardada ha quedado desincronizada, solo restablece la contraseña del rol dedicado cuando verifica que ese rol es el propietario de la base, y actualiza `instance.env` de forma atómica dejando una copia privada previa. Si existe el rol pero falta la base, crea únicamente esa base. Si existe una base sin el rol esperado o pertenece a otro propietario, se detiene sin cambiar propietarios, permisos ni datos.
 
 ### Instalación interactiva
 
@@ -71,7 +71,7 @@ sudo ./install.sh --mode native --postgres external \
   --bind 192.168.56.101 --port 5173
 ```
 
-El instalador solicita la URL de PostgreSQL sin mostrarla en pantalla. Para automatización también acepta `--database-url`, aunque los argumentos de línea de comandos pueden ser visibles temporalmente en la lista de procesos y quedar en el historial del shell; para contraseñas es preferible el prompt oculto.
+El instalador solicita la URL de PostgreSQL sin mostrarla en pantalla y valida la autenticación ejecutando `SELECT 1` antes de continuar. En Debian/Ubuntu instala `postgresql-client` si falta `psql`; en otras distribuciones debes instalar el cliente PostgreSQL antes de elegir esta opción. Para automatización también acepta `--database-url`, aunque los argumentos de línea de comandos pueden ser visibles temporalmente en la lista de procesos y quedar en el historial del shell; para contraseñas es preferible el prompt oculto.
 
 Ejemplo de URL:
 
@@ -126,7 +126,7 @@ curl -fsS http://127.0.0.1:8080/healthz
 curl -fsS http://127.0.0.1:8080/readyz
 ```
 
-`/healthz` confirma que el proceso HTTP responde. `/readyz` comprueba permisos de escritura del directorio y conectividad TCP con el host PostgreSQL; todavía no valida autenticación, esquema ni migraciones SQL.
+`/healthz` confirma que el proceso HTTP responde. El instalador comprueba la autenticación PostgreSQL con `SELECT 1` en ambos modos native (local y externo). `/readyz`, en cambio, solo comprueba permisos de escritura y conectividad TCP; el backend todavía no implementa consultas funcionales, esquema ni migraciones SQL.
 
 ## Desinstalación
 
