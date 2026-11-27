@@ -2,36 +2,48 @@
 
 **Your files. Your server. Your control.**
 
-OpenTransfer is an open-source, self-hosted platform for secure external file transfers. It is designed for organizations that want to operate their own infrastructure and control how external recipients access shared files.
+OpenTransfer es una plataforma libre y autoalojada para compartir archivos externamente con control sobre usuarios, invitados, carpetas, cuotas, seguridad y trazabilidad.
 
-## MVP direction
+## Qué queremos construir
 
-The first release focuses on one complete workflow: an authenticated employee uploads a file, creates a protected download link, and can later revoke it. An administrator controls users, security policies, storage and audit history.
+- Usuarios internos con roles y límites individuales.
+- Invitados externos por invitación, limitados a carpetas o transferencias concretas.
+- Carpetas personales y compartidas con permisos.
+- Cuota total de almacenamiento por usuario y tamaño máximo por subida, como controles separados.
+- Enlaces de descarga protegidos y revocables.
+- Panel administrativo con auditoría y logs técnicos diferenciados.
+- Almacenamiento seleccionable: local, NAS y S3-compatible.
+- Instalación Docker y Linux nativa.
 
-See [the MVP scope](docs/MVP.md) for the feature boundary and release acceptance criteria.
+No es una suite de sincronización general. Consulta [el alcance MVP](docs/MVP.md), [el plan por fases](docs/ROADMAP.md) y [la arquitectura](docs/ARCHITECTURE.md).
 
-## Technology
+## Tecnología prevista
 
-- Backend: Go modular monolith
-- Web interface: React, TypeScript and Tailwind CSS
-- Database: PostgreSQL
-- Initial storage: local filesystem, with an abstraction for NAS and S3-compatible providers
-- Deployment: Docker Compose first; native Linux/systemd installation after the service lifecycle is stable
+- Backend: Go, monolito modular
+- Web: React, TypeScript y Tailwind CSS
+- Base de datos: PostgreSQL
+- Almacenamiento inicial: filesystem local, con interfaz para NAS y S3
+- Despliegue: Docker Compose y, posteriormente, Linux/systemd
 
-## Encryption
+## Cifrado
 
-The architecture distinguishes two modes:
+La arquitectura diferencia dos modos:
+- **Cifrado gestionado por servidor:** el servidor administra las claves y puede soportar flujos de inspección server-side.
+- **Cifrado de extremo a extremo (E2EE):** los clientes cifran/descifran y el servidor almacena ciphertext, sin poder inspeccionar los archivos.
 
-- **Server-managed encryption:** the server manages encryption keys and may support server-side inspection workflows.
-- **End-to-end encryption (E2EE):** encryption and decryption happen in clients; the server stores ciphertext and cannot inspect file contents.
+El MVP empieza por cifrado gestionado por servidor en reposo. E2EE se abordará en una fase posterior con protocolo y modelo de amenazas revisados.
 
-The MVP starts with server-managed encryption at rest. E2EE is a later milestone and requires a separately reviewed protocol and threat model. The two modes have different capabilities; E2EE content cannot be scanned by server-side antivirus.
+## Versiones y actualizaciones
 
-## Repository status
+Cada versión publicable que actualice una instalación entregará un script llamado actualizacionvX.Y.Z.sh. Los scripts conservarán base de datos, archivos, configuración, certificados y claves, y aplicarán solo las migraciones necesarias. Consulta [la política de actualizaciones](docs/UPDATES.md).
 
-The admin frontend is currently a navigation and setup-flow prototype. It is not connected to a backend, does not authenticate users and does not apply real security policies. Do not expose it as a production administration interface.
+El repositorio aún no tiene un servicio instalable; por tanto, todavía no debe usarse ningún actualizador para un servidor real.
 
-## Development
+## Estado del repositorio
+
+El panel React es un prototipo de navegación y diseño. No está conectado a una API, no autentica usuarios y no aplica cuotas, permisos ni auditoría real. No lo expongas como panel de producción.
+
+## Desarrollo del frontend
 
 ```bash
 cd web
@@ -39,8 +51,4 @@ npm install
 npm run dev
 ```
 
-The Go API, PostgreSQL schema, secure administrator bootstrap and upload/download workflow are the next implementation milestones.
-
-## Security notice
-
-OpenTransfer is under active development. It is not production-ready and must not be used for sensitive production transfers until authentication, authorization, cryptography, upload handling, backup/restore and security testing have been implemented and reviewed. No software can be guaranteed unhackable.
+OpenTransfer está en desarrollo activo y no está listo para transferencias sensibles de producción. No se promete seguridad absoluta ni cumplimiento RGPD automático.
