@@ -199,6 +199,7 @@ if [[ -f "$CONFIG_FILE" ]]; then
   POSTGRES_DB="${POSTGRES_DB:-opentransfer}"
   POSTGRES_USER="$(read_existing_config POSTGRES_USER)"
   POSTGRES_USER="${POSTGRES_USER:-opentransfer}"
+  DB_PASSWORD="$(read_existing_config POSTGRES_PASSWORD)"
   [[ -n "$STORAGE_BACKEND" && -n "$STORAGE_PATH" && -n "$HTTP_PORT" ]] || die "La configuración existente está incompleta. Revisa $CONFIG_FILE manualmente."
 fi
 [[ "$STORAGE_BACKEND" == "local" || "$STORAGE_BACKEND" == "nas" ]] || die "Backend de almacenamiento no válido en la configuración."
@@ -209,16 +210,122 @@ if [[ "$STORAGE_BACKEND" == "nas" ]]; then
   command -v mountpoint >/dev/null && mountpoint -q "$STORAGE_PATH" || warn "No se ha podido confirmar que $STORAGE_PATH sea un punto de montaje."
 fi
 
+# PostgreSQL helpers are shared by both native setup paths. Never source instance.env:
+# it contains secrets and is data, not executable shell code.
+ensure_postgres_client() {
+  command -v psql >/dev/null 2>&1 && return 0
+  [[ -r /etc/os-release ]] || die "No se puede identificar el sistema para instalar postgresql-client."
+  ID=""
+  ID_LIKE=""
+  # shellcheck disable=SC1091
+  . /etc/os-release
+  case "$ID" in
+    debian|ubuntu) ;;
+    *)
+      case " $ID_LIKE " in
+        *" debian "*|*" ubuntu "*) ;;
+        *) die "Falta psql. Instala el cliente PostgreSQL de tu distribución y vuelve a ejecutar el instalador." ;;
+      esac
+      ;;
+  esac
+  command -v apt-get >/dev/null || die "Falta psql y no se encuentra apt-get para instalar postgresql-client."
+  log "Instalando el cliente PostgreSQL..."
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql-client
+  command -v psql >/dev/null 2>&1 || die "No se ha podido instalar psql."
+}
+
+postgres_url_authority() {
+  printf '%s\n' "$1" | sed -E 's#^[^:]+://##; s#/.*$##; s#^.*@##'
+}
+
+postgres_url_host() {
+  local authority
+  authority="$(postgres_url_authority "$1")"
+  if [[ "$authority" == \[* ]]; then
+    printf '%s\n' "$authority" | sed -E 's/^\[([^]]+)\].*$/\1/'
+  else
+    printf '%s\n' "$authority" | cut -d: -f1
+  fi
+}
+
+postgres_url_port() {
+  local authority suffix
+  authority="$(postgres_url_authority "$1")"
+  if [[ "$authority" == \[* ]]; then
+    suffix="$(printf '%s\n' "$authority" | sed -nE 's/^\[[^]]+\]:([0-9]+)$/\1/p')"
+    [[ -n "$suffix" ]] || suffix=5432
+  elif [[ "$authority" == *:* ]]; then
+    suffix="$(printf '%s\n' "$authority" | awk -F: '{print $NF}')"
+  else
+    suffix=5432
+  fi
+  [[ "$suffix" =~ ^[0-9]{1,5}$ ]] && ((suffix > 0 && suffix < 65536)) || return 1
+  printf '%s\n' "$suffix"
+}
+
+postgres_host_is_loopback() {
+  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+    localhost|127.*|::1) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+persist_native_postgres_config() {
+  local new_url="$1" new_password="$2" tmp backup
+  [[ -f "$CONFIG_FILE" ]] || return 0
+  umask 077
+  backup="$(mktemp "$CONFIG_FILE.backup.XXXXXX")"
+  cp -p -- "$CONFIG_FILE" "$backup"
+  chmod 600 "$backup"
+  tmp="$(mktemp "$CONFIG_FILE.tmp.XXXXXX")"
+  if ! OT_INSTALL_DB_URL="$new_url" OT_INSTALL_DB_PASSWORD="$new_password" awk '
+    /^OT_DATABASE_URL=/ {
+      print "OT_DATABASE_URL=" ENVIRON["OT_INSTALL_DB_URL"]
+      have_url=1
+      next
+    }
+    /^OT_POSTGRES_MANAGED=/ {
+      print "OT_POSTGRES_MANAGED=1"
+      have_managed=1
+      next
+    }
+    /^POSTGRES_PASSWORD=/ {
+      if (ENVIRON["OT_INSTALL_DB_PASSWORD"] != "")
+        print "POSTGRES_PASSWORD=" ENVIRON["OT_INSTALL_DB_PASSWORD"]
+      else
+        print
+      have_password=1
+      next
+    }
+    { print }
+    END {
+      if (!have_url) print "OT_DATABASE_URL=" ENVIRON["OT_INSTALL_DB_URL"]
+      if (!have_managed) print "OT_POSTGRES_MANAGED=1"
+      if (ENVIRON["OT_INSTALL_DB_PASSWORD"] != "" && !have_password)
+        print "POSTGRES_PASSWORD=" ENVIRON["OT_INSTALL_DB_PASSWORD"]
+    }
+  ' "$CONFIG_FILE" > "$tmp"; then
+    rm -f -- "$tmp"
+    die "No se pudo preparar la actualización segura de $CONFIG_FILE. PostgreSQL no se ha alterado por esta operación."
+  fi
+  chmod 600 "$tmp"
+  mv -f -- "$tmp" "$CONFIG_FILE"
+  log "Configuración PostgreSQL actualizada. Copia privada anterior: $backup"
+}
+
 # Configure PostgreSQL before staging application files. Native mode supports
-# an automatically managed local PostgreSQL or an existing external instance.
+# a local managed cluster or a separately supplied PostgreSQL URL.
 install_local_postgres() {
   [[ -r /etc/os-release ]] || die "No se puede identificar la distribución para instalar PostgreSQL."
   # shellcheck disable=SC1091
+  ID=""
+  ID_LIKE=""
   . /etc/os-release
-  case "${ID:-}" in
+  case "$ID" in
     debian|ubuntu) ;;
     *)
-      case " ${ID_LIKE:-} " in
+      case " $ID_LIKE " in
         *" debian "*|*" ubuntu "*) ;;
         *) die "La instalación automática de PostgreSQL solo está preparada para Debian/Ubuntu. Usa --postgres external en otra distribución." ;;
       esac
@@ -226,6 +333,14 @@ install_local_postgres() {
   esac
   command -v apt-get >/dev/null || die "No se encuentra apt-get. Usa --postgres external o instala PostgreSQL manualmente."
   command -v dpkg-query >/dev/null || die "No se encuentra dpkg-query."
+
+  local saved_host="" preferred_port="" cluster="" version="" name="" port="" status=""
+  if [[ -f "$CONFIG_FILE" && -n "$DATABASE_URL" ]]; then
+    saved_host="$(postgres_url_host "$DATABASE_URL")"
+    postgres_host_is_loopback "$saved_host" || die "La configuración previa apunta a PostgreSQL remoto ('$saved_host'), no al PostgreSQL local. Elige la opción 2 (usar uno existente); no se cambiará esa conexión."
+    preferred_port="$(postgres_url_port "$DATABASE_URL")" || die "El puerto de PostgreSQL guardado en $CONFIG_FILE no es válido."
+  fi
+
   if ! dpkg-query -W -f='${Status}' postgresql 2>/dev/null | grep -q "install ok installed"; then
     log "Instalando PostgreSQL mediante APT..."
     apt-get update
@@ -233,81 +348,122 @@ install_local_postgres() {
   else
     log "PostgreSQL ya está instalado; se reutilizará el servicio local."
   fi
+  ensure_postgres_client
   command -v pg_lsclusters >/dev/null || die "Falta pg_lsclusters (paquete postgresql-common)."
   command -v runuser >/dev/null || die "Falta runuser para administrar PostgreSQL de forma segura."
   systemctl enable --now postgresql
-  local cluster version name port
-  cluster="$(pg_lsclusters --no-header | awk '$4 == "online" {print $1, $2, $3; exit}')"
-  if [[ -z "$cluster" ]]; then
-    cluster="$(pg_lsclusters --no-header | awk 'NF {print $1, $2, $3; exit}')"
-    if [[ -n "$cluster" ]]; then
-      IFS=' ' read -r version name port _ <<< "$cluster"
-      log "Iniciando el clúster PostgreSQL $version/$name..."
-      pg_ctlcluster "$version" "$name" start
-    else
+
+  if [[ -n "$preferred_port" ]]; then
+    # A saved local URL identifies the cluster to reuse. Never silently switch
+    # to another local cluster, because that could create a second empty DB.
+    cluster="$(pg_lsclusters --no-header | awk -v p="$preferred_port" '$3 == p {print $1, $2, $3, $4; exit}')"
+    if [[ -z "$cluster" && "$preferred_port" == "5432" && -z "$(pg_lsclusters --no-header)" ]]; then
       version="$(psql --version | awk '{print $3}' | cut -d. -f1)"
       [[ "$version" =~ ^[0-9]+$ ]] || die "No se pudo detectar la versión de PostgreSQL para crear el clúster."
       log "Creando el clúster PostgreSQL $version/main..."
       pg_createcluster "$version" main --start
+      cluster="$(pg_lsclusters --no-header | awk -v p="$preferred_port" '$3 == p {print $1, $2, $3, $4; exit}')"
     fi
-    cluster="$(pg_lsclusters --no-header | awk '$4 == "online" {print $1, $2, $3; exit}')"
+    [[ -n "$cluster" ]] || die "No existe un clúster PostgreSQL local en el puerto $preferred_port indicado por la configuración. No se usará otro clúster ni se tocarán datos."
+    IFS=' ' read -r version name port status <<< "$cluster"
+    if [[ "$status" != "online" ]]; then
+      log "Iniciando el clúster PostgreSQL $version/$name en el puerto $port..."
+      pg_ctlcluster "$version" "$name" start
+    fi
+    cluster="$(pg_lsclusters --no-header | awk -v p="$preferred_port" '$3 == p && $4 == "online" {print $1, $2, $3, $4; exit}')"
+  else
+    cluster="$(pg_lsclusters --no-header | awk '$4 == "online" {print $1, $2, $3, $4; exit}')"
+    if [[ -z "$cluster" ]]; then
+      cluster="$(pg_lsclusters --no-header | awk 'NF {print $1, $2, $3, $4; exit}')"
+      if [[ -n "$cluster" ]]; then
+        IFS=' ' read -r version name port status <<< "$cluster"
+        log "Iniciando el clúster PostgreSQL $version/$name..."
+        pg_ctlcluster "$version" "$name" start
+      else
+        version="$(psql --version | awk '{print $3}' | cut -d. -f1)"
+        [[ "$version" =~ ^[0-9]+$ ]] || die "No se pudo detectar la versión de PostgreSQL para crear el clúster."
+        log "Creando el clúster PostgreSQL $version/main..."
+        pg_createcluster "$version" main --start
+      fi
+      cluster="$(pg_lsclusters --no-header | awk '$4 == "online" {print $1, $2, $3, $4; exit}')"
+    fi
   fi
   [[ -n "$cluster" ]] || die "No hay ningún clúster PostgreSQL en línea."
-  # The script uses a strict global IFS (newline/tab); parse pg_lsclusters columns with spaces explicitly.
-  IFS=' ' read -r version name port _ <<< "$cluster"
-  [[ "$port" =~ ^[0-9]{1,5}$ ]] || die "No se pudo detectar un puerto válido del clúster PostgreSQL (obtenido: '$port'; fila: '$cluster')."
+  IFS=' ' read -r version name port status <<< "$cluster"
+  [[ "$port" =~ ^[0-9]{1,5}$ && "$status" == "online" ]] || die "No se pudo detectar un puerto válido de un clúster PostgreSQL en línea."
   PG_PORT="$port"
 
-  # If a previous run already wrote a managed database URL to the protected
-  # config, keep its password. Rotating it here would desynchronize PostgreSQL
-  # and instance.env because existing configuration is deliberately preserved.
-  if [[ -f "$CONFIG_FILE" ]]; then
-    if [[ "$POSTGRES_MANAGED" == "1" && -n "$DATABASE_URL" ]]; then
-      log "Se conserva la conexión PostgreSQL de la configuración existente."
-      psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -c "SELECT 1" >/dev/null || die "La conexión PostgreSQL guardada en $CONFIG_FILE no funciona. No se cambiarán usuarios, contraseñas ni datos."
-      POSTGRES_MANAGED=1
-      return 0
-    fi
-    die "Ya existe $CONFIG_FILE y no identifica una base PostgreSQL administrada por OpenTransfer. No se modificará PostgreSQL ni la configuración."
-  fi
-
-  local role_exists db_exists db_owner
+  local role_exists="" db_exists="" db_owner="" db_info="" active_db="" active_user="" server_addr="" server_port=""
   role_exists="$(runuser -u postgres -- psql -X -A -t -p "$PG_PORT" -d postgres -v ON_ERROR_STOP=1 -c "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '$POSTGRES_USER')")"
   db_exists="$(runuser -u postgres -- psql -X -A -t -p "$PG_PORT" -d postgres -v ON_ERROR_STOP=1 -c "SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = '$POSTGRES_DB')")"
 
+  # A previous config can contain a valid local URL but lack the managed flag
+  # (older installer versions did this). Authenticate and verify its identity;
+  # never reject it just because the metadata flag is absent or zero.
+  if [[ -f "$CONFIG_FILE" && -n "$DATABASE_URL" ]]; then
+    if db_info="$(psql "$DATABASE_URL" -X -A -t -F '|' -v ON_ERROR_STOP=1 \
+      -c "SELECT current_database(), current_user, COALESCE(inet_server_addr()::text, ''), COALESCE(inet_server_port()::text, '')" 2>/dev/null)"; then
+      IFS='|' read -r active_db active_user server_addr server_port <<< "$db_info"
+      [[ "$active_db" == "$POSTGRES_DB" && "$active_user" == "$POSTGRES_USER" ]] || die "La URL guardada conecta, pero apunta a otra base o usuario. No se modificará la conexión ni los datos."
+      case "$server_addr" in
+        127.*|::1) ;;
+        *) die "La URL guardada no termina en una conexión PostgreSQL de loopback. Elige la opción 2 para usarla como base existente." ;;
+      esac
+      [[ "$server_port" == "$PG_PORT" ]] || die "La URL guardada conecta al puerto $server_port, pero el clúster local seleccionado usa $PG_PORT. No se cambiará de clúster."
+      db_owner="$(runuser -u postgres -- psql -X -A -t -p "$PG_PORT" -d postgres -v ON_ERROR_STOP=1 -c "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = '$POSTGRES_DB'")"
+      [[ "$db_owner" == "$POSTGRES_USER" ]] || die "La base $POSTGRES_DB no pertenece al rol dedicado $POSTGRES_USER (propietario: '$db_owner'). No se cambiarán propietarios ni datos."
+      log "Conexión PostgreSQL local anterior validada; se conservan usuario, contraseña y datos."
+      POSTGRES_MANAGED=1
+      if [[ "$(read_existing_config OT_POSTGRES_MANAGED)" != "1" ]]; then
+        persist_native_postgres_config "$DATABASE_URL" ""
+      fi
+      return 0
+    fi
+    warn "La URL PostgreSQL local guardada no autentica; se comprobará el rol y la propiedad antes de reparar la conexión."
+  fi
+
   DB_PASSWORD="$(openssl rand -hex 32)"
   if [[ "$role_exists" == "t" && "$db_exists" == "t" ]]; then
-    # Recover an interrupted previous installation only when the existing
-    # database is already owned by the dedicated OpenTransfer role.
     db_owner="$(runuser -u postgres -- psql -X -A -t -p "$PG_PORT" -d postgres -v ON_ERROR_STOP=1 -c "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = '$POSTGRES_DB'")"
-    [[ "$db_owner" == "$POSTGRES_USER" ]] || die "Ya existen $POSTGRES_USER/$POSTGRES_DB, pero la base no pertenece al usuario de OpenTransfer (propietario: '$db_owner'). No se modificará nada."
-    log "Recuperando la base de datos de una instalación anterior incompleta..."
+    [[ "$db_owner" == "$POSTGRES_USER" ]] || die "Ya existe la base $POSTGRES_DB, pero no pertenece al usuario dedicado $POSTGRES_USER (propietario: '$db_owner'). No se cambiarán propietarios ni datos."
+    log "Recuperando el rol y la base de datos de una instalación local anterior..."
+    runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -p "$PG_PORT" -d postgres <<SQL
+ALTER ROLE $POSTGRES_USER WITH LOGIN PASSWORD '$DB_PASSWORD';
+SQL
+  elif [[ "$role_exists" == "t" && "$db_exists" == "f" ]]; then
+    log "El usuario PostgreSQL ya existe; se creará únicamente la base de datos que falta..."
+    runuser -u postgres -- createdb --port="$PG_PORT" --owner="$POSTGRES_USER" "$POSTGRES_DB"
     runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -p "$PG_PORT" -d postgres <<SQL
 ALTER ROLE $POSTGRES_USER WITH LOGIN PASSWORD '$DB_PASSWORD';
 SQL
   elif [[ "$role_exists" == "f" && "$db_exists" == "f" ]]; then
     log "Creando el usuario y la base de datos OpenTransfer..."
-    # Feed SQL through stdin: the generated password is not exposed in process arguments or a file.
+    # Send SQL through stdin; the generated password is not exposed in process arguments.
     runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -p "$PG_PORT" -d postgres <<SQL
 SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', '$POSTGRES_USER', '$DB_PASSWORD')
-\\gexec
+\gexec
 SELECT format('CREATE DATABASE %I OWNER %I', '$POSTGRES_DB', '$POSTGRES_USER')
-\\gexec
+\gexec
 SQL
   else
-    die "Solo existe uno de los recursos PostgreSQL ($POSTGRES_USER/$POSTGRES_DB). No se modificará nada automáticamente."
+    die "La base $POSTGRES_DB existe pero falta el rol $POSTGRES_USER. No se cambiará el propietario ni los permisos de una base existente automáticamente."
   fi
+
   DATABASE_URL="postgres://$POSTGRES_USER:$DB_PASSWORD@127.0.0.1:$PG_PORT/$POSTGRES_DB?sslmode=disable"
-  PGPASSWORD="$DB_PASSWORD" psql -X -h 127.0.0.1 -p "$PG_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -A -t -v ON_ERROR_STOP=1 -c "SELECT 1" | grep -qx "1" || die "PostgreSQL se ha configurado, pero no se ha podido validar la conexión TCP."
+  if ! PGPASSWORD="$DB_PASSWORD" psql -X -h 127.0.0.1 -p "$PG_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -A -t -v ON_ERROR_STOP=1 -c "SELECT 1" 2>/dev/null | grep -qx "1"; then
+    die "PostgreSQL se ha configurado, pero ha fallado la autenticación TCP de prueba. No se han eliminado bases ni datos."
+  fi
   POSTGRES_MANAGED=1
+  if [[ -f "$CONFIG_FILE" ]]; then
+    persist_native_postgres_config "$DATABASE_URL" "$DB_PASSWORD"
+  fi
 }
 
+
 if [[ "$MODE" == "native" ]]; then
-  if [[ -n "$DATABASE_URL" && "$POSTGRES_MODE" == "install" && "$POSTGRES_MANAGED" != "1" ]]; then
-    die "No combines --postgres install con una --database-url externa. Usa --postgres external para una base de datos existente."
-  fi
   if [[ -n "$DATABASE_URL" && "$POSTGRES_MODE" == "auto" ]]; then
-    if [[ "$POSTGRES_MANAGED" == "1" ]]; then
+    saved_host="$(postgres_url_host "$DATABASE_URL")"
+    if [[ "$POSTGRES_MANAGED" == "1" ]] || postgres_host_is_loopback "$saved_host"; then
       POSTGRES_MODE="install"
     else
       POSTGRES_MODE="external"
@@ -335,6 +491,11 @@ if [[ "$MODE" == "native" ]]; then
       printf '\n'
     fi
     [[ "$DATABASE_URL" =~ ^postgres(ql)?://[^[:space:]]+$ ]] || die "URL PostgreSQL vacía o inválida. Usa postgres:// o postgresql:// con host y base de datos."
+    ensure_postgres_client
+    if ! psql "$DATABASE_URL" -X -A -t -v ON_ERROR_STOP=1 -c "SELECT 1" 2>/dev/null | grep -qx "1"; then
+      die "No se pudo autenticar contra el PostgreSQL indicado. Comprueba host, puerto, base, usuario, contraseña y sslmode; no se ha modificado la base de datos."
+    fi
+    log "Conexión PostgreSQL existente validada correctamente."
     POSTGRES_MANAGED=0
   fi
 fi
