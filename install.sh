@@ -135,7 +135,7 @@ else
 fi
 [[ "$STORAGE_BACKEND" == "local" || "$STORAGE_BACKEND" == "nas" ]] || die "Backend de almacenamiento no válido."
 [[ "$HTTP_PORT" =~ ^[0-9]{1,5}$ ]] && ((HTTP_PORT > 0 && HTTP_PORT < 65536)) || die "Puerto inválido."
-[[ "$BIND_ADDRESS" == "localhost" || "$BIND_ADDRESS" =~ ^[0-9a-fA-F:.]+$ ]] || die "Dirección de bind inválida (usa localhost o una dirección IP).
+[[ "$BIND_ADDRESS" == "localhost" || "$BIND_ADDRESS" =~ ^[0-9a-fA-F:.]+$ ]] || die "Dirección de bind inválida (usa localhost o una dirección IP)."
 [[ "$STORAGE_PATH" == /* && "$STORAGE_PATH" != *" "* && "$STORAGE_PATH" != *":"* && "$STORAGE_PATH" != *"|"* ]] || die "La ruta de almacenamiento debe ser absoluta y no contener espacios, ':' ni '|'."
 [[ "$PUBLIC_URL" == "" || "$PUBLIC_URL" =~ ^https?://[^[:space:]]+$ ]] || die "URL pública inválida (usa http:// o https://)."
 if ss -ltn | awk -v p=":$HTTP_PORT" '$4 ~ p"$" {found=1} END {exit !found}'; then
