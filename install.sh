@@ -110,7 +110,7 @@ if ((ASSUME_YES == 0)); then
   read -r -p "Modo [docker/native] (docker): " answer
   [[ -z "$answer" ]] || MODE="$answer"
   [[ "$MODE" == "docker" || "$MODE" == "native" ]] || die "Modo no válido."
-  read -r -p "Dirección de publicación [$BIND_ADDRESS]: " answer
+  read -r -p "Dirección de escucha (localhost o IP de red) [$BIND_ADDRESS]: " answer
   [[ -z "$answer" ]] || BIND_ADDRESS="$answer"
   read -r -p "Puerto HTTP [$HTTP_PORT]: " answer
   [[ -z "$answer" ]] || HTTP_PORT="$answer"
@@ -131,7 +131,7 @@ else
   command -v go >/dev/null || die "El modo native requiere Go instalado (versión 1.23 o posterior)."
   command -v systemctl >/dev/null || die "El modo native requiere systemd."
   command -v useradd >/dev/null || die "No se encuentra useradd."
-  [[ -n "$DATABASE_URL" ]] || warn "El modo native necesita un PostgreSQL ya instalado y una URL de conexión."
+  # The connection string is collected after loading any existing protected config.
 fi
 [[ "$STORAGE_BACKEND" == "local" || "$STORAGE_BACKEND" == "nas" ]] || die "Backend de almacenamiento no válido."
 [[ "$HTTP_PORT" =~ ^[0-9]{1,5}$ ]] && ((HTTP_PORT > 0 && HTTP_PORT < 65536)) || die "Puerto inválido."
@@ -171,6 +171,27 @@ if [[ "$STORAGE_BACKEND" == "nas" ]]; then
   [[ -d "$STORAGE_PATH" ]] || die "La ruta NAS configurada no existe; no se creará para evitar escribir en el disco local si el NAS está desmontado."
   command -v mountpoint >/dev/null && mountpoint -q "$STORAGE_PATH" || warn "No se ha podido confirmar que $STORAGE_PATH sea un punto de montaje."
 fi
+
+# Fail before creating a release directory if native mode has no PostgreSQL URL.
+if [[ "$MODE" == "native" && -z "$DATABASE_URL" ]]; then
+  if ((ASSUME_YES == 1)); then
+    die "Modo native requiere --database-url. Consulta docs/INSTALLATION.md para crear la base de datos PostgreSQL."
+  fi
+  printf '\\nOpenTransfer no instala PostgreSQL en modo native. Debes indicar una base de datos ya creada.\\n'
+  read -r -s -p "URL PostgreSQL (por ejemplo postgres://usuario:clave@127.0.0.1:5432/opentransfer?sslmode=disable): " DATABASE_URL
+  printf '\\n'
+fi
+if [[ "$MODE" == "native" ]]; then
+  [[ "$DATABASE_URL" =~ ^postgres(ql)?://[^[:space:]]+$ ]] || die "URL PostgreSQL vacía o inválida. Usa postgres:// o postgresql:// con host y base de datos."
+fi
+
+LISTEN_HOST="$BIND_ADDRESS"
+if [[ "$LISTEN_HOST" == *:* && "$LISTEN_HOST" != \\[*\\] ]]; then
+  LISTEN_ADDR="[$LISTEN_HOST]:$HTTP_PORT"
+else
+  LISTEN_ADDR="$LISTEN_HOST:$HTTP_PORT"
+fi
+
 mkdir -p "$APP_ROOT/releases" "$CONFIG_DIR" "$DATA_DIR" "$BACKUP_DIR" "$STORAGE_PATH"
 chmod 750 "$APP_ROOT" "$APP_ROOT/releases" "$DATA_DIR" "$BACKUP_DIR" 2>/dev/null || true
 chmod 750 "$CONFIG_DIR"
@@ -195,7 +216,12 @@ if command -v git >/dev/null && git -C "$SOURCE_DIR" rev-parse --short=8 HEAD >/
 fi
 RELEASE_NAME="${VERSION}-${SHORT_SHA}"
 RELEASE_DIR="$APP_ROOT/releases/$RELEASE_NAME"
-[[ ! -e "$RELEASE_DIR" ]] || die "La versión ya está instalada: $RELEASE_DIR"
+# An interrupted earlier attempt may have left an inactive release directory.
+# Never delete it; use a unique new release path instead.
+if [[ -e "$RELEASE_DIR" ]]; then
+  RELEASE_NAME="${RELEASE_NAME}-retry-$(date -u +%Y%m%dT%H%M%SZ)"
+  RELEASE_DIR="$APP_ROOT/releases/$RELEASE_NAME"
+fi
 STAGE_DIR="$APP_ROOT/releases/.stage-$RELEASE_NAME-$$"
 mkdir -m 750 "$STAGE_DIR"
 tar --exclude=.git --exclude=backups --exclude=data -cf - -C "$SOURCE_DIR" . | tar -xf - -C "$STAGE_DIR"
@@ -210,17 +236,14 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
   if [[ "$MODE" == "docker" ]]; then
     DATABASE_URL="postgres://$POSTGRES_USER:$DB_PASSWORD@database:5432/$POSTGRES_DB?sslmode=disable"
   else
-    if [[ -z "$DATABASE_URL" && $ASSUME_YES -eq 0 ]]; then
-      read -r -s -p "URL PostgreSQL (entrada oculta): " DATABASE_URL; printf '\n'
-    fi
-    [[ -n "$DATABASE_URL" ]] || die "Para native especifica --database-url o introdúcela en el asistente."
+    [[ -n "$DATABASE_URL" ]] || die "Falta OT_DATABASE_URL para modo native."
   fi
   umask 077
   CONFIG_TMP="$CONFIG_FILE.tmp.$$"
   cat > "$CONFIG_TMP" <<EOF
 # OpenTransfer private configuration. Keep this file secret (chmod 600).
 OT_CONFIG_FILE=$CONFIG_FILE
-OT_LISTEN_ADDR=127.0.0.1:$HTTP_PORT
+OT_LISTEN_ADDR=$LISTEN_ADDR
 OT_PUBLIC_URL=$PUBLIC_URL
 OT_LOG_LEVEL=info
 OT_DATABASE_URL=$DATABASE_URL
