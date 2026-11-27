@@ -7,10 +7,11 @@ Estado: primera base de instalación y diagnóstico. No es todavía una suite de
 - Linux x86_64 o ARM64.
 - 2 GiB libres como mínimo en el volumen de instalación y 2 GiB de RAM recomendados.
 - Docker Engine + Docker Compose v2 para el modo recomendado.
-- Para modo nativo: systemd, Go 1.23 o posterior y un PostgreSQL externo ya instalado.
+- Para modo nativo: systemd y Go 1.23 o posterior.
+- La instalación automática de PostgreSQL está disponible en Debian/Ubuntu mediante APT. En otras distribuciones se puede conectar a un PostgreSQL existente.
 - HTTPS terminado en un proxy inverso administrado por la empresa cuando el servicio se exponga fuera de localhost.
 
-El instalador no instala Docker/PostgreSQL por su cuenta y no modifica firewall, SSH, DNS, Nginx, Caddy ni certificados. La empresa decide cuándo y cómo hacerlo.
+El instalador no instala Docker ni modifica firewall, SSH, DNS, Nginx, Caddy o certificados. En modo nativo puede instalar PostgreSQL localmente si se elige esa opción.
 
 ## Instalación Docker Compose
 
@@ -31,33 +32,60 @@ El modo Docker usa PostgreSQL privado en una red interna de Compose. La base de 
 
 ## Instalación Linux nativa
 
-La modalidad nativa instala un binario Go y un servicio systemd. Requiere PostgreSQL previamente instalado, con un usuario y una base de datos creados. En Debian/Ubuntu, por ejemplo:
+La instalación nativa puede configurar PostgreSQL de dos formas. Si ejecutas el asistente de forma interactiva, te preguntará cuál prefieres:
+
+1. **Instalar PostgreSQL localmente (recomendado):** en Debian/Ubuntu instala los paquetes mediante APT si faltan, inicia el servicio, crea un usuario y una base de datos exclusivos para OpenTransfer, genera una contraseña aleatoria y guarda la conexión en el archivo privado de configuración.
+2. **Usar un PostgreSQL existente:** te pedirá la URL de conexión con la contraseña oculta mientras escribes.
+
+La opción automática requiere permisos root y conexión a los repositorios APT. No altera roles ni bases de datos existentes: si encuentra el nombre elegido ocupado, se detiene sin modificarlo. Puedes elegir otro nombre con `--postgres-db` y `--postgres-user`.
+
+### Instalación interactiva
 
 ```bash
-sudo apt update
-sudo apt install -y postgresql
-sudo -u postgres psql
+sudo ./install.sh
 ```
 
-Dentro de `psql`, crea un usuario con una contraseña larga y una base de datos propia:
+Selecciona `native`, configura la IP/puerto y el almacenamiento. Cuando pregunte por PostgreSQL, pulsa Enter para instalarlo localmente o elige la opción 2 para introducir una conexión existente.
 
-```sql
-CREATE ROLE opentransfer LOGIN PASSWORD 'CAMBIA_POR_UNA_CLAVE_LARGA';
-CREATE DATABASE opentransfer OWNER opentransfer;
-\q
-```
+### Instalación automática no interactiva
 
-Después instala indicando la conexión. Sustituye la contraseña del ejemplo por la que hayas creado:
+En Debian/Ubuntu, el siguiente comando instala PostgreSQL si es necesario y prepara una base de datos propia:
 
 ```bash
-sudo ./install.sh --mode native \
-  --bind 192.168.56.101 --port 5173 \
-  --database-url 'postgres://opentransfer:TU_CLAVE@127.0.0.1:5432/opentransfer?sslmode=disable'
+sudo ./install.sh --mode native --postgres install \
+  --bind 192.168.56.101 --port 5173 --yes
 ```
 
-También puedes ejecutar `sudo ./install.sh` y escribir la URL cuando el instalador la solicite de forma oculta. Si la dejas vacía, el instalador se detiene antes de crear un release. La dirección `--bind` es la interfaz de red en la que escuchará el servicio; debe existir en ese servidor. Usa `127.0.0.1` para acceso solo local, una IP LAN concreta para acceso desde esa red o `0.0.0.0` para todas las interfaces (solo junto a reglas de red/firewall adecuadas).
+También puedes indicar nombres distintos para evitar colisiones con bases de datos que ya existan:
 
-La URL contiene credenciales; evita escribirla en scripts compartidos, historial de shell o tickets. Para producción, configura TLS y el modo SSL apropiado de PostgreSQL en vez de desactivar SSL cuando la conexión atraviese una red.
+```bash
+sudo ./install.sh --mode native --postgres install \
+  --postgres-db opentransfer_prod --postgres-user opentransfer_app \
+  --bind 192.168.56.101 --port 5173 --yes
+```
+
+### Usar PostgreSQL existente
+
+```bash
+sudo ./install.sh --mode native --postgres external \
+  --bind 192.168.56.101 --port 5173
+```
+
+El instalador solicita la URL de PostgreSQL sin mostrarla en pantalla. Para automatización también acepta `--database-url`, aunque los argumentos de línea de comandos pueden ser visibles temporalmente en la lista de procesos y quedar en el historial del shell; para contraseñas es preferible el prompt oculto.
+
+Ejemplo de URL:
+
+```
+postgres://opentransfer:CONTRASEÑA@127.0.0.1:5432/opentransfer?sslmode=disable
+```
+
+Si la contraseña contiene caracteres reservados de URL, codifícalos porcentualmente. Usa TLS y el modo SSL apropiado cuando PostgreSQL esté en otra máquina o la conexión atraviese una red no confiable.
+
+### Distribuciones distintas de Debian/Ubuntu
+
+La instalación automática mediante APT no se ejecuta en Fedora, RHEL, Arch u otras familias. Instala PostgreSQL según la documentación de tu distribución y usa `--postgres external` para introducir la URL local o remota.
+
+La dirección `--bind` es la interfaz de red en la que escuchará OpenTransfer; debe estar asignada al servidor. Usa `127.0.0.1` para acceso solo local, una IP LAN concreta para acceso desde esa red o `0.0.0.0` para todas las interfaces (solo junto a reglas de red/firewall adecuadas). El instalador no abre puertos.
 
 ## Directorios persistentes
 
