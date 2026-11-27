@@ -33,13 +33,14 @@ func LoadFrom(getenv func(string) string) (Config, error) {
 	}
 
 	keyText := strings.TrimSpace(getenv("OT_ENCRYPTION_KEY"))
-	if keyText != "" {
-		key, err := base64.StdEncoding.DecodeString(keyText)
-		if err != nil {
-			return Config{}, fmt.Errorf("OT_ENCRYPTION_KEY must be valid base64")
-		}
-		cfg.EncryptionKey = key
+	if keyText == "" {
+		return Config{}, fmt.Errorf("OT_ENCRYPTION_KEY is required")
 	}
+	key, err := base64.StdEncoding.DecodeString(keyText)
+	if err != nil {
+		return Config{}, fmt.Errorf("OT_ENCRYPTION_KEY must be valid base64")
+	}
+	cfg.EncryptionKey = key
 
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -64,7 +65,7 @@ func (c Config) Validate() error {
 	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") || u.Hostname() == "" {
 		return fmt.Errorf("OT_DATABASE_URL must be a valid postgres:// or postgresql:// URL")
 	}
-	if c.EncryptionKey != nil && len(c.EncryptionKey) != 32 {
+	if len(c.EncryptionKey) != 32 {
 		return fmt.Errorf("OT_ENCRYPTION_KEY must decode to exactly 32 bytes")
 	}
 	switch c.LogLevel {
