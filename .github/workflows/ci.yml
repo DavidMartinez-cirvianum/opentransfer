@@ -23,3 +23,51 @@ jobs:
         run: go test ./...
       - name: Run go vet
         run: go vet ./...
+      - name: Exercise native PostgreSQL installer and saved-config recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo ./install.sh --mode native --postgres install \
+            --app-dir /tmp/opentransfer-ci-first/app \
+            --config-dir /tmp/opentransfer-ci-first/config \
+            --data-dir /tmp/opentransfer-ci-first/data \
+            --backup-dir /tmp/opentransfer-ci-first/backups \
+            --bind 127.0.0.1 --port 24567 --yes --no-start
+
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -c \
+            "CREATE ROLE opentransfer_ci LOGIN PASSWORD 'ci-secret';"
+          sudo -u postgres createdb --owner=opentransfer_ci opentransfer_ci
+
+          mkdir -p /tmp/opentransfer-ci-second/config /tmp/opentransfer-ci-second/data/files
+          ci_key="$(openssl rand -base64 32 | tr -d '\n')"
+          cat > /tmp/opentransfer-ci-second/config/instance.env <<EOF
+          OT_CONFIG_FILE=/tmp/opentransfer-ci-second/config/instance.env
+          OT_LISTEN_ADDR=127.0.0.1:24568
+          OT_PUBLIC_URL=http://127.0.0.1:24568
+          OT_LOG_LEVEL=info
+          OT_DATABASE_URL=postgres://opentransfer_ci:ci-secret@127.0.0.1:5432/opentransfer_ci?sslmode=disable
+          OT_STORAGE_BACKEND=local
+          OT_STORAGE_LOCAL_PATH=/tmp/opentransfer-ci-second/data/files
+          OT_ENCRYPTION_KEY=$ci_key
+          OT_BIND_ADDRESS=127.0.0.1
+          OT_HTTP_PORT=24568
+          OT_POSTGRES_MANAGED=0
+          POSTGRES_DB=opentransfer_ci
+          POSTGRES_USER=opentransfer_ci
+          POSTGRES_PASSWORD=ci-secret
+          EOF
+          chmod 600 /tmp/opentransfer-ci-second/config/instance.env
+
+          sudo ./install.sh --mode native --postgres install \
+            --postgres-db opentransfer_ci --postgres-user opentransfer_ci \
+            --app-dir /tmp/opentransfer-ci-second/app \
+            --config-dir /tmp/opentransfer-ci-second/config \
+            --data-dir /tmp/opentransfer-ci-second/data \
+            --backup-dir /tmp/opentransfer-ci-second/backups \
+            --bind 127.0.0.1 --port 24568 --yes --no-start
+
+          grep -qx 'OT_POSTGRES_MANAGED=1' /tmp/opentransfer-ci-second/config/instance.env
+          grep -qx 'POSTGRES_PASSWORD=ci-secret' /tmp/opentransfer-ci-second/config/instance.env
+          grep -Fqx 'OT_DATABASE_URL=postgres://opentransfer_ci:ci-secret@127.0.0.1:5432/opentransfer_ci?sslmode=disable' /tmp/opentransfer-ci-second/config/instance.env
+          compgen -G '/tmp/opentransfer-ci-second/config/instance.env.backup.*' >/dev/null
